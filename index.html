@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#0a1f14" />
+  <title>GROK FC</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230a1f14'/%3E%3Ccircle cx='32' cy='32' r='18' fill='%23ff6a00'/%3E%3Ccircle cx='32' cy='32' r='10' fill='%2300e8ff'/%3E%3Ccircle cx='32' cy='32' r='4' fill='%23fff'/%3E%3C/svg%3E" />
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <div id="hud" class="hidden">
+    <div id="scoreboard">
+      <div class="team home">
+        <span class="kit"></span>
+        <span class="name">GROK</span>
+        <span id="score-home" class="score">0</span>
+      </div>
+      <div class="clock-wrap">
+        <div id="clock">00:00</div>
+        <div id="half-label">1ST</div>
+      </div>
+      <div class="team away">
+        <span id="score-away" class="score">0</span>
+        <span class="name">RIVAL</span>
+        <span class="kit"></span>
+      </div>
+    </div>
+    <div id="call-banner"></div>
+    <div id="card-log"></div>
+    <div id="player-info">
+      <span id="ctrl-name">FW 9</span>
+      <div id="stam-bar"><div id="stam-fill"></div></div>
+    </div>
+  </div>
+
+  <div id="card-flash" class="hidden">
+    <div id="card-flash-inner">
+      <div id="card-color"></div>
+      <div id="card-text">YELLOW CARD</div>
+      <div id="card-player"></div>
+    </div>
+  </div>
+
+  <div id="touch-ui" class="hidden" aria-hidden="true">
+    <div id="stick-pad"><div id="stick"></div></div>
+    <div id="action-btns">
+      <button type="button" id="btn-pass">PASS</button>
+      <button type="button" id="btn-shoot">SHOOT</button>
+      <button type="button" id="btn-tackle">SLIDE</button>
+      <button type="button" id="btn-switch">SWAP</button>
+    </div>
+  </div>
+
+  <div id="overlay" class="show">
+    <div class="card" id="title-card">
+      <div class="stripe"></div>
+      <p class="kicker">ARCADE FOOTBALL · STRICT REF</p>
+      <h1>GROK<br>FC</h1>
+      <p class="tag">7v7 · SLIDE TACKLES · REAL CARDS</p>
+      <p class="blurb">Control one player, switch with Tab. Pass, shoot, and time your slides — the ref books reckless play. Yellows stack. Reds walk.</p>
+      <ul class="controls">
+        <li><kbd>WASD</kbd> / arrows move · <kbd>J</kbd>/<kbd>X</kbd> pass · <kbd>K</kbd>/<kbd>C</kbd> shoot</li>
+        <li><kbd>L</kbd>/<kbd>V</kbd>/<kbd>Space</kbd> slide tackle · <kbd>Tab</kbd> switch · <kbd>Esc</kbd> pause</li>
+        <li class="touch-note">Stick + PASS / SHOOT / SLIDE / SWAP</li>
+      </ul>
+      <button id="play-btn" type="button" class="btn primary">KICK OFF</button>
+    </div>
+
+    <div class="card hidden" id="pause-card">
+      <p class="kicker">PAUSED</p>
+      <h2>TIME OUT</h2>
+      <button id="resume-btn" type="button" class="btn primary">RESUME</button>
+      <button id="pause-quit-btn" type="button" class="btn ghost">TITLE</button>
+    </div>
+
+    <div class="card hidden" id="half-card">
+      <p class="kicker">HALF TIME</p>
+      <h2 id="half-score">0 – 0</h2>
+      <p class="result" id="half-msg">Teams switch ends. Ref still watching.</p>
+      <button id="second-half-btn" type="button" class="btn primary">2ND HALF</button>
+    </div>
+
+    <div class="card hidden" id="full-card">
+      <p class="kicker">FULL TIME</p>
+      <h2 id="full-score">0 – 0</h2>
+      <p class="result" id="full-msg">Match complete.</p>
+      <div class="stats" id="full-stats"></div>
+      <button id="retry-btn" type="button" class="btn primary">REMATCH</button>
+      <button id="full-menu-btn" type="button" class="btn ghost">TITLE</button>
+    </div>
+  </div>
+
+  <div id="countdown"></div>
+
+  <script src="game.js"></script>
+</body>
+</html>
