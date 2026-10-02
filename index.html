@@ -7,7 +7,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#0a1f14" />
-  <title>GROK FC</title>
+  <title>GROK FC 2.0</title>
   <link rel="stylesheet" href="style.css" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230a1f14'/%3E%3Ccircle cx='32' cy='32' r='18' fill='%23ff6a00'/%3E%3Ccircle cx='32' cy='32' r='10' fill='%2300e8ff'/%3E%3Ccircle cx='32' cy='32' r='4' fill='%23fff'/%3E%3C/svg%3E" />
 </head>
@@ -16,83 +16,114 @@
 
   <div id="hud" class="hidden">
     <div id="scoreboard">
-      <div class="team home">
-        <span class="kit"></span>
-        <span class="name">GROK</span>
-        <span id="score-home" class="score">0</span>
-      </div>
-      <div class="clock-wrap">
-        <div id="clock">00:00</div>
-        <div id="half-label">1ST</div>
-      </div>
-      <div class="team away">
-        <span id="score-away" class="score">0</span>
-        <span class="name">RIVAL</span>
-        <span class="kit"></span>
-      </div>
+      <div class="team home"><span class="kit"></span><span id="name-home" class="name">GROK</span><span id="score-home" class="score">0</span></div>
+      <div class="clock-wrap"><div id="clock">0'</div><div id="half-label">1ST HALF</div></div>
+      <div class="team away"><span id="score-away" class="score">0</span><span id="name-away" class="name">RIVAL</span><span class="kit"></span></div>
     </div>
+    <button id="pause-btn" type="button" aria-label="Pause">II</button>
     <div id="call-banner"></div>
+    <div id="card-toast" class="hidden">
+      <div id="toast-pic" class="cardpic yellow"></div>
+      <div class="toast-text"><b id="toast-title">YELLOW CARD</b><span id="toast-sub"></span></div>
+    </div>
     <div id="card-log"></div>
-    <div id="player-info">
-      <span id="ctrl-name">FW 9</span>
-      <div id="stam-bar"><div id="stam-fill"></div></div>
-    </div>
-  </div>
-
-  <div id="card-flash" class="hidden">
-    <div id="card-flash-inner">
-      <div id="card-color"></div>
-      <div id="card-text">YELLOW CARD</div>
-      <div id="card-player"></div>
-    </div>
+    <div id="player-info"><span id="ctrl-name">#9</span><div id="stam-bar"><div id="stam-fill"></div></div></div>
+    <div id="sp-hint" class="hidden"></div>
+    <div id="replay-tag" class="hidden">▶ REPLAY <small>tap to skip</small></div>
   </div>
 
   <div id="touch-ui" class="hidden" aria-hidden="true">
-    <div id="stick-pad"><div id="stick"></div></div>
+    <div id="stick-zone"><div id="stick-base"><div id="stick"></div></div><div id="stick-hint">MOVE</div></div>
     <div id="action-btns">
-      <button type="button" id="btn-pass">PASS</button>
-      <button type="button" id="btn-shoot">SHOOT</button>
-      <button type="button" id="btn-tackle">SLIDE</button>
-      <button type="button" id="btn-switch">SWAP</button>
+      <button type="button" id="btn-tackle"><span id="lbl-tackle" class="lbl">TACKLE</span></button>
+      <button type="button" id="btn-pass"><span id="lbl-pass" class="lbl">PASS</span></button>
+      <button type="button" id="btn-shoot"><span id="lbl-shoot" class="lbl">SHOOT</span><span id="sub-shoot" class="sub">hold = power</span></button>
     </div>
   </div>
 
   <div id="overlay" class="show">
     <div class="card" id="title-card">
       <div class="stripe"></div>
-      <p class="kicker">ARCADE FOOTBALL · STRICT REF</p>
-      <h1>GROK<br>FC</h1>
-      <p class="tag">7v7 · SLIDE TACKLES · REAL CARDS</p>
-      <p class="blurb">Control one player, switch with Tab. Pass, shoot, and time your slides — the ref books reckless play. Yellows stack. Reds walk.</p>
-      <ul class="controls">
-        <li><kbd>WASD</kbd> / arrows move · <kbd>J</kbd>/<kbd>X</kbd> pass · <kbd>K</kbd>/<kbd>C</kbd> shoot</li>
-        <li><kbd>L</kbd>/<kbd>V</kbd>/<kbd>Space</kbd> slide tackle · <kbd>Tab</kbd> switch · <kbd>Esc</kbd> pause</li>
-        <li class="touch-note">Stick + PASS / SHOOT / SLIDE / SWAP</li>
-      </ul>
-      <button id="play-btn" type="button" class="btn primary">KICK OFF</button>
+      <div class="title-row">
+        <div>
+          <p class="kicker">ARCADE FOOTBALL · 7 v 7</p>
+          <h1>GROK FC <span class="ver">2.0</span></h1>
+          <p class="tag">FAIR REF · EASY CONTROLS · MORE GOALS</p>
+        </div>
+      </div>
+      <div class="settings">
+        <div class="set"><label>YOUR TEAM</label><div id="pick-team" class="swatches"></div></div>
+        <div class="set"><label>OPPONENT</label><div id="pick-opp" class="swatches"></div></div>
+        <div class="set"><label>OPPONENT LEVEL</label><div id="pick-diff" class="segs"></div></div>
+        <div class="set"><label>REFEREE</label><div id="pick-ref" class="segs"></div><p id="ref-note" class="note"></p></div>
+        <div class="set"><label>MATCH LENGTH</label><div id="pick-len" class="segs"></div></div>
+      </div>
+      <div class="btn-row">
+        <button id="play-btn" type="button" class="btn primary">KICK OFF</button>
+        <button id="help-btn" type="button" class="btn ghost">HOW TO PLAY</button>
+      </div>
+      <p id="title-record" class="note"></p>
+    </div>
+
+    <div class="card hidden" id="help-card">
+      <div class="stripe"></div>
+      <p class="kicker">HOW TO PLAY</p>
+      <h2>Score more than them!</h2>
+      <div class="help-grid">
+        <div>
+          <h3>📱 Phone</h3>
+          <ul>
+            <li><b>Left thumb</b> anywhere = joystick</li>
+            <li><b>PASS</b> — passes to the teammate you point at (dashed ring)</li>
+            <li><b>SHOOT</b> — hold for power, let go to shoot. Aims for the open corner.</li>
+            <li><b>SPRINT</b> — hold while you have the ball</li>
+            <li>Defending: <b>TACKLE</b> near the ball, <b>PRESS</b> (hold) to chase, <b>SWITCH</b> to change player</li>
+          </ul>
+        </div>
+        <div class="kb">
+          <h3>⌨️ Keyboard</h3>
+          <ul>
+            <li><kbd>WASD</kbd>/<kbd>Arrows</kbd> move · <kbd>Shift</kbd> sprint</li>
+            <li><kbd>J</kbd>/<kbd>Z</kbd> pass (switch when defending)</li>
+            <li><kbd>K</kbd>/<kbd>X</kbd> shoot — hold for power (press when defending)</li>
+            <li><kbd>L</kbd>/<kbd>C</kbd>/<kbd>Space</kbd> tackle · <kbd>Q</kbd>/<kbd>Tab</kbd> switch · <kbd>Esc</kbd> pause</li>
+          </ul>
+        </div>
+      </div>
+      <p class="tips">⭐ You always control the player with the <b class="yel">yellow arrow</b>. It switches automatically to whoever is closest to the ball.
+        Tackle from the front — tackles from behind or after the ball has gone are fouls, and really reckless ones get a card.</p>
+      <button id="help-ok" type="button" class="btn primary">GOT IT — LET'S PLAY</button>
     </div>
 
     <div class="card hidden" id="pause-card">
       <p class="kicker">PAUSED</p>
       <h2>TIME OUT</h2>
-      <button id="resume-btn" type="button" class="btn primary">RESUME</button>
-      <button id="pause-quit-btn" type="button" class="btn ghost">TITLE</button>
+      <div id="pause-help" class="hidden note">PASS = pass to the ringed teammate · SHOOT = hold &amp; release · TACKLE near the ball · PRESS (hold) chases · SWITCH changes player</div>
+      <div class="btn-row">
+        <button id="resume-btn" type="button" class="btn primary">RESUME</button>
+        <button id="pause-help-btn" type="button" class="btn ghost">CONTROLS</button>
+        <button id="pause-quit-btn" type="button" class="btn ghost">QUIT</button>
+      </div>
     </div>
 
     <div class="card hidden" id="half-card">
       <p class="kicker">HALF TIME</p>
       <h2 id="half-score">0 – 0</h2>
-      <p class="result" id="half-msg">Teams switch ends. Ref still watching.</p>
+      <p class="result" id="half-msg"></p>
       <button id="second-half-btn" type="button" class="btn primary">2ND HALF</button>
     </div>
 
     <div class="card hidden" id="full-card">
+      <div class="stripe"></div>
       <p class="kicker">FULL TIME</p>
       <h2 id="full-score">0 – 0</h2>
-      <p class="result" id="full-msg">Match complete.</p>
+      <p class="result" id="full-msg"></p>
       <div class="stats" id="full-stats"></div>
-      <button id="retry-btn" type="button" class="btn primary">REMATCH</button>
-      <button id="full-menu-btn" type="button" class="btn ghost">TITLE</button>
+      <p id="full-record" class="note"></p>
+      <div class="btn-row">
+        <button id="retry-btn" type="button" class="btn primary">REMATCH</button>
+        <button id="full-menu-btn" type="button" class="btn ghost">MENU</button>
+      </div>
     </div>
   </div>
 
