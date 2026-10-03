@@ -77,7 +77,7 @@
   function angDiff(a, b) { let d = b - a; while (d > Math.PI) d -= TAU; while (d < -Math.PI) d += TAU; return d; }
   const teamDir = t => (t === HOME ? 1 : -1);
   const kitOf = t => TEAMS[t === HOME ? cfg.team : cfg.opp];
-  const diffFor = t => (t === AWAY ? DIFFS[cfg.diff] : HOME_AI);
+  const diffFor = t => (t === AWAY ? DIFFS[NET.on ? 1 : cfg.diff] : HOME_AI);
 
   // ---------- state ----------
   let W = 800, H = 600, dpr = 1, S = 1;
@@ -98,6 +98,23 @@
   let roles = { chaser: [null, null], presser: [null, null], cover: [null, null], support: [null, null] };
   let passPreview = null;
   let goalFlash = 0;
+  // ---------- online (2 phones, host-authoritative). UT = the team the *current* input context controls ----------
+  let UT = HOME, moveSrc = null, otherCtx = null;
+  const NET = { on: false, host: false, client: false, room: null, names: null, colors: null, R: null, gone: false, snaps: [], hostCtrl: -1, lastSt: "", fin: null };
+  function setCtrl(team, id) { if (team === UT) controlledId = id; else if (otherCtx) otherCtx.controlledId = id; }
+  const isHumanTeam = t => t === UT || (!!otherCtx && t !== UT);
+  // run fn with the remote player's input context swapped in (host only)
+  function withCtx(c, fn) {
+    const H = { UT, btn, switchReq, controlledId, charging, shotCharge, autoSwitchT, moveSrc };
+    otherCtx = H;
+    UT = c.UT; btn = c.btn; switchReq = c.switchReq; controlledId = c.controlledId; charging = c.charging; shotCharge = c.shotCharge; autoSwitchT = c.autoSwitchT; moveSrc = c.move;
+    try { fn(); } finally {
+      c.switchReq = switchReq; c.controlledId = controlledId; c.charging = charging; c.shotCharge = shotCharge; c.autoSwitchT = autoSwitchT;
+      UT = H.UT; btn = H.btn; switchReq = H.switchReq; controlledId = H.controlledId; charging = H.charging; shotCharge = H.shotCharge; autoSwitchT = H.autoSwitchT; moveSrc = H.moveSrc;
+      otherCtx = c;
+    }
+  }
+  const ctxFor = (team, fn) => { if (team === UT) fn(); else if (otherCtx) withCtx(otherCtx, fn); };
 
   function freshStats() {
     return { shots: [0, 0], onTarget: [0, 0], fouls: [0, 0], yellows: [0, 0], reds: [0, 0], poss: [0, 0],
@@ -259,9 +276,10 @@
   // ---------- input ----------
   const keys = {};
   const mkBtn = () => ({ down: false, pressed: false, released: false });
-  const btn = { pass: mkBtn(), shoot: mkBtn(), tackle: mkBtn() };
-  let switchReq = false, anyTap = false;
-  function bPress(b) { if (!b.down) { b.down = true; b.pressed = true; } anyTap = true; }
+  let btn = { pass: mkBtn(), shoot: mkBtn(), tackle: mkBtn() };
+  const localBtn = btn;
+  let switchReq = false, anyTap = false, swCnt = 0;
+  function bPress(b) { if (!b.down) { b.down = true; b.pressed = true; b.cnt = (b.cnt || 0) + 1; } anyTap = true; }
   function bRelease(b) { if (b.down) { b.down = false; b.released = true; } }
   const KEYMAP = { KeyJ: "pass", KeyZ: "pass", KeyK: "shoot", KeyX: "shoot", KeyL: "tackle", KeyC: "tackle", Space: "tackle" };
   window.addEventListener("keydown", e => {
@@ -269,7 +287,7 @@
     keys[e.code] = true;
     if (e.repeat) return;
     if (KEYMAP[e.code]) bPress(btn[KEYMAP[e.code]]);
-    if (e.code === "Tab" || e.code === "KeyQ") switchReq = true;
+    if (e.code === "Tab" || e.code === "KeyQ") { switchReq = true; swCnt++; }
     if (e.code === "Escape" || e.code === "KeyP") togglePause();
     if (e.code === "Enter") anyTap = true;
   });
@@ -277,6 +295,7 @@
   window.addEventListener("blur", () => { for (const k in keys) keys[k] = false; for (const k in btn) bRelease(btn[k]); });
   const stick = { x: 0, y: 0, active: false };
   function readMove() {
+    if (moveSrc) return moveSrc;
     let x = 0, y = 0;
     if (keys.KeyW || keys.ArrowUp) y -= 1;
     if (keys.KeyS || keys.ArrowDown) y += 1;
@@ -290,6 +309,7 @@
   function clearEdges() {
     for (const k in btn) { btn[k].pressed = false; btn[k].released = false; }
     switchReq = false; anyTap = false;
+    if (otherCtx) { for (const k in otherCtx.btn) { otherCtx.btn[k].pressed = false; otherCtx.btn[k].released = false; } otherCtx.switchReq = false; }
   }
 
   const isTouch = () => matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
@@ -463,7 +483,7 @@
     ball.owner = p; ball.z = 0; ball.vz = 0;
     ball.lastTouch = p; ball.lastTeam = p.team; ball.passTarget = null; ball.shot = false; ball.gkHold = false;
     p.receiveT = 0;
-    if (p.team === HOME && p.role !== "GK") controlledId = p.id;
+    if (isHumanTeam(p.team) && p.role !== "GK") setCtrl(p.team, p.id);
   }
   function doPass(p, m, o) {
     o = o || {};
@@ -482,7 +502,7 @@
     if (o.maxSpd) spd = Math.min(spd, o.maxSpd);
     kick(p, Math.cos(a) * spd, Math.sin(a) * spd, vz, { target: m });
     m.receiveT = 1.6;
-    if (p.team === HOME && m.role !== "GK" && !autoplay) controlledId = m.id;
+    if (isHumanTeam(p.team) && m.role !== "GK" && !autoplay) setCtrl(p.team, m.id);
   }
   function shoot(p, power, aimY, errMul) {
     const dir = teamDir(p.team), gx = dir * HW;
@@ -694,6 +714,7 @@
     $("toast-sub").textContent = `#${p.num} ${p.name} (${kitOf(p.team).name}) — ${reason}`;
     $("card-toast").classList.remove("hidden"); toastT = 2.4;
     Sfx.card();
+    netEv({ t: "card", c: color, ti: $("toast-title").textContent, su: $("toast-sub").textContent, log: cardLog.slice(0, 4) });
   }
   function renderCardLog() {
     $("card-log").innerHTML = cardLog.slice(0, 4).map(c => `<div class="entry ${c.color === "red" ? "r" : "y"}">${c.text}</div>`).join("");
@@ -785,9 +806,9 @@
       atk.forEach((p, i) => { p.spx = dir * (HW - 70 - i * 18); p.spy = (i - 1) * 45; });
     }
     if (type === "kickoff" || type === "penalty") for (const p of players) { if (!p.sentOff) { p.x = p.spx; p.y = p.spy; p.vx = p.vy = 0; } }
-    if (team === HOME && taker.role !== "GK") controlledId = taker.id;
-    sp.wait = team === HOME ? 0.5 : 1.0;
-    if (team === HOME && !autoplay) {
+    if (isHumanTeam(team) && taker.role !== "GK") setCtrl(team, taker.id);
+    sp.wait = isHumanTeam(team) ? 0.5 : 1.0;
+    if (team === UT && !autoplay) {
       $("sp-hint").innerHTML = `<b>${SP_TEXT[type][0]}</b> ${SP_TEXT[type][1]}`;
       $("sp-hint").classList.remove("hidden");
     } else if (type === "penalty" && !autoplay) {
@@ -810,10 +831,12 @@
     if (!t || t.sentOff) { endSetpiece(); return; }
     const ready = sp.t > sp.wait && Math.hypot(t.spx - t.x, t.spy - t.y) < 8;
     if (!ready) { if (sp.t > 4) { t.x = t.spx; t.y = t.spy; } return; }
-    if (sp.team === HOME && !autoplay) {
-      if (btn.pass.pressed) takeSP("pass");
-      else if (btn.shoot.pressed) takeSP("shoot");
-      else if (sp.t > 7) takeSP("pass");
+    if (isHumanTeam(sp.team) && !autoplay) {
+      ctxFor(sp.team, () => {
+        if (btn.pass.pressed) takeSP("pass");
+        else if (btn.shoot.pressed) takeSP("shoot");
+        else if (sp.t > 7) takeSP("pass");
+      });
     } else if (sp.t > sp.wait + 0.7) takeSP("ai");
   }
   function endSetpiece() { sp = null; state = "play"; $("sp-hint").classList.add("hidden"); }
@@ -822,7 +845,7 @@
     const D = diffFor(team);
     t.face = Math.atan2(ball.y - t.y, ball.x - t.x);
     const inp = readMove();
-    const user = team === HOME && kind !== "ai";
+    const user = team === UT && kind !== "ai";
     const s = sp;
     endSetpiece();
     t.noTouch = 0.3;
@@ -867,7 +890,7 @@
       if (dist(t, m) > 230) {
         const a = Math.atan2(m.y - t.y, m.x - t.x);
         kick(t, Math.cos(a) * 380, Math.sin(a) * 380, 140, { target: m });
-        if (team === HOME && !autoplay) controlledId = m.id;
+        if (isHumanTeam(team) && !autoplay) setCtrl(team, m.id);
         return;
       }
       doPass(t, m, { user, maxSpd: 430 });
@@ -880,7 +903,7 @@
   function doSwitch(force) {
     const ctrl = controlled();
     const tx = ball.x + ball.vx * 0.25, ty = ball.y + ball.vy * 0.25;
-    const cands = active(HOME).filter(p => p.role !== "GK" && (force || p !== ctrl));
+    const cands = active(UT).filter(p => p.role !== "GK" && (force || p !== ctrl));
     if (!cands.length) return;
     cands.sort((a, b) => Math.hypot(a.x - tx, a.y - ty) - Math.hypot(b.x - tx, b.y - ty));
     controlledId = cands[0].id; autoSwitchT = 0.6;
@@ -890,14 +913,14 @@
     autoSwitchT -= dt;
     if (autoSwitchT > 0) return;
     autoSwitchT = 0.2;
-    if (ball.owner && ball.owner.team === HOME) return;
+    if (ball.owner && ball.owner.team === UT) return;
     const ctrl = controlled();
     if (ctrl && ctrl.tackleT > 0) return;
-    if (!autoplay && ball.passTarget && ball.passTarget.team === HOME && !ball.owner) return;
+    if (!autoplay && ball.passTarget && ball.passTarget.team === UT && !ball.owner) return;
     const tx = ball.x + ball.vx * 0.25, ty = ball.y + ball.vy * 0.25;
     let best = null, bd = 1e9;
     for (const p of players) {
-      if (p.team !== HOME || p.sentOff || p.role === "GK" || p.stun > 0) continue;
+      if (p.team !== UT || p.sentOff || p.role === "GK" || p.stun > 0) continue;
       const d = Math.hypot(p.x - tx, p.y - ty); if (d < bd) { bd = d; best = p; }
     }
     if (!best) return;
@@ -916,7 +939,7 @@
       } else if (charging) userShoot(p);
     } else {
       charging = false; shotCharge = 0;
-      const homePoss = ball.owner && ball.owner.team === HOME;
+      const homePoss = ball.owner && ball.owner.team === UT;
       if (!homePoss) {
         if (btn.pass.pressed) doSwitch();
         if (btn.tackle.pressed) userTackle(p);
@@ -936,7 +959,7 @@
     charging = false; shotCharge = 0;
   }
   function userTackle(p) {
-    const carrier = ball.owner && ball.owner.team !== HOME ? ball.owner : null;
+    const carrier = ball.owner && ball.owner.team !== UT ? ball.owner : null;
     if (ball.gkHold) return;
     const tx = ball.x + ball.vx * 0.12, ty = ball.y + ball.vy * 0.12;
     const d = Math.hypot(tx - p.x, ty - p.y);
@@ -949,8 +972,8 @@
   function userControl(p, dt) {
     const inp = readMove();
     const hasBall = ball.owner === p;
-    const homePoss = ball.owner && ball.owner.team === HOME;
-    const sprint = (keys.ShiftLeft || keys.ShiftRight || (btn.tackle.down && homePoss)) && p.stamina > 5;
+    const homePoss = ball.owner && ball.owner.team === UT;
+    const sprint = ((moveSrc ? moveSrc.sprint : (keys.ShiftLeft || keys.ShiftRight)) || (btn.tackle.down && homePoss)) && p.stamina > 5;
     const spd = p.spd * (hasBall ? 0.95 : 1) * (sprint ? 1.3 : 1);
     p.sprinting = false;
     if (inp.m > 0.12) {
@@ -1293,9 +1316,10 @@
   }
   function stepPlay(dt) {
     clock += dt;
-    if (!autoplay) handleUserActions(dt);
+    if (!autoplay) { handleUserActions(dt); if (otherCtx && state === "play") withCtx(otherCtx, () => handleUserActions(dt)); }
     if (state !== "play") return;
     autoSwitch(dt);
+    if (otherCtx) withCtx(otherCtx, () => autoSwitch(dt));
     computeRoles();
     for (const p of players) {
       if (p.sentOff) continue;
@@ -1303,7 +1327,8 @@
       if (p.tackleT > 0) { stepTackle(p, dt); continue; }
       if (p.stun > 0) { accel(p, 0, 0, dt, 5); integrate(p, dt); continue; }
       if (p.role === "GK") gkUpdate(p, dt);
-      else if (p.id === controlledId && p.team === HOME) { if (autoplay) botControl(p, dt); else userControl(p, dt); }
+      else if (p.id === controlledId && p.team === UT) { if (autoplay) botControl(p, dt); else userControl(p, dt); }
+      else if (otherCtx && p.team !== UT && p.id === otherCtx.controlledId) withCtx(otherCtx, () => userControl(p, dt));
       else if (ball.owner === p) aiCarrier(p, dt);
       else aiOffBall(p, dt);
       if (!p.sprinting) p.stamina = Math.min(100, p.stamina + 9 * dt);
@@ -1342,6 +1367,7 @@
       $("half-score").textContent = `${score[0]} – ${score[1]}`;
       $("half-msg").textContent = `Shots ${stats.shots[0]}–${stats.shots[1]} · Fouls ${stats.fouls[0] + stats.fouls[1]} · Cards ${stats.yellows[0] + stats.yellows[1] + stats.reds[0] + stats.reds[1]}`;
       showOverlay("half-card");
+      if (NET.on) { $("second-half-btn").classList.add("hidden"); $("half-msg").textContent += " · 2nd half starts in a moment…"; setTimeout(() => { if (state === "half") startHalf2(); }, 3500); }
     } else endMatch();
   }
   function startHalf2() {
@@ -1352,12 +1378,12 @@
     state = "full";
     $("sp-hint").classList.add("hidden");
     if (autoplay) return;
-    const h = score[0], a = score[1];
-    if (h > a) record.w++; else if (h < a) record.l++; else record.d++;
+    const h = score[0], a = score[1], mine = score[UT], theirs = score[1 - UT];
+    if (mine > theirs) record.w++; else if (mine < theirs) record.l++; else record.d++;
     try { localStorage.setItem(LS_REC, JSON.stringify(record)); } catch (e) { /* ignore */ }
-    const hn = kitOf(HOME).name, an = kitOf(AWAY).name;
+    const hn = NET.names ? NET.names[0] + " WINS!" : `${kitOf(HOME).name} WIN!`, an = NET.names ? NET.names[1] + " WINS!" : `${kitOf(AWAY).name} take it. Rematch?`;
     $("full-score").textContent = `${h} – ${a}`;
-    $("full-msg").textContent = h > a ? `${hn} WIN!` : h < a ? `${an} take it. Rematch?` : "Honours even — a draw.";
+    $("full-msg").textContent = h > a ? hn : h < a ? an : "Honours even — a draw.";
     const pt = stats.poss[0] + stats.poss[1] || 1;
     const row = (l, x, y) => `<div class="srow"><b>${x}</b><span>${l}</span><b>${y}</b></div>`;
     $("full-stats").innerHTML =
@@ -1368,6 +1394,7 @@
       row("RED CARDS", stats.reds[0], stats.reds[1]);
     $("full-record").textContent = `Your record: ${record.w}W ${record.d}D ${record.l}L`;
     showOverlay("full-card");
+    if (NET.on) { netFullCard(); NET.fin = { sc: $("full-score").textContent, msg: $("full-msg").textContent, st: $("full-stats").innerHTML }; }
   }
   function stepGoal(dt) {
     goalT -= dt;
@@ -1392,7 +1419,7 @@
     }
     stepRef(dt);
     if (goalT > 1.8) recordFrame(dt);
-    else if (!replayFrames && !autoplay) replayFrames = recBuf.slice(-125);
+    else if (!replayFrames && !autoplay && !NET.on) replayFrames = recBuf.slice(-125);
     if (goalT <= 0) {
       for (const p of players) p.celebrate = false;
       if (replayFrames && replayFrames.length > 30 && !autoplay) {
@@ -1420,6 +1447,7 @@
     if (goalFlash > 0) goalFlash -= dt * 3;
     for (const q of particles) { q.life -= dt; q.x += q.vx * dt; q.y += q.vy * dt; q.z += q.vz * dt; q.vz -= 500 * dt; if (q.z < 0) { q.z = 0; q.vz *= -0.3; q.vx *= 0.8; q.vy *= 0.8; } }
     if (particles.length) particles = particles.filter(q => q.life > 0);
+    if (NET.client) { clientStep(dt); clearEdges(); return; }
     switch (state) {
       case "countdown": {
         cdT -= dt;
@@ -1649,6 +1677,16 @@
     ctx.globalAlpha = 1;
     const c = controlled();
     if (c && state !== "title" && state !== "replay" && state !== "goal") drawMarker(c);
+    if (NET.names && state !== "title") {
+      const oid = NET.client ? NET.hostCtrl : (otherCtx ? otherCtx.controlledId : -1), o = players.find(q => q.id === oid && !q.sentOff);
+      if (o) {
+        const nm = NET.names[NET.client ? 0 : 1], sx = PX(o.x), sy = PY(o.y, 0) - 46 * S;
+        ctx.font = `900 ${Math.max(11, Math.round(9 * S))}px Trebuchet MS, sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        const w = ctx.measureText(nm).width + 12;
+        ctx.fillStyle = "rgba(0,0,0,0.6)"; rr(sx - w / 2, sy - 9, w, 18, 6); ctx.fill();
+        ctx.fillStyle = NET.colors ? NET.colors[NET.client ? 0 : 1] : "#fff"; ctx.fillText(nm, sx, sy);
+      }
+    }
     if (state !== "title") drawMinimap(list, b.x, b.y);
     if (state === "goal" && goalInfo) {
       const t = 2.6 - goalT, s = Math.min(1, t * 4) * (1 + Math.sin(t * 10) * 0.04);
@@ -1675,12 +1713,13 @@
     if (autoplay) return;
     const el = $("call-banner");
     el.textContent = text; el.classList.add("show"); bannerT = t || 1.2;
+    netEv({ t: "bn", x: text, d: t || 1.2 });
   }
   function applyTeamColorsToHUD() {
     const h = kitOf(HOME), a = kitOf(AWAY);
     document.querySelector("#scoreboard .home .kit").style.background = `linear-gradient(135deg, ${h.kit}, ${h.kit2})`;
     document.querySelector("#scoreboard .away .kit").style.background = `linear-gradient(135deg, ${a.kit}, ${a.kit2})`;
-    setText("name-home", h.name); setText("name-away", a.name);
+    setText("name-home", NET.names ? NET.names[0] : h.name); setText("name-away", NET.names ? NET.names[1] : a.name);
   }
   function updateHUD() {
     setText("score-home", String(score[0])); setText("score-away", String(score[1]));
@@ -1693,7 +1732,7 @@
       if (hudCache.stam !== w) { hudCache.stam = w; $("stam-fill").style.width = w; }
     }
     let mode = "def";
-    if ((ball.owner && ball.owner.team === HOME) || (state === "setpiece" && sp && sp.team === HOME)) mode = "atk";
+    if ((ball.owner && ball.owner.team === UT) || (state === "setpiece" && sp && sp.team === UT)) mode = "atk";
     if (hudCache.mode !== mode) {
       hudCache.mode = mode;
       document.body.classList.toggle("atk", mode === "atk");
@@ -1712,6 +1751,8 @@
   }
   function hideOverlay() { $("overlay").classList.remove("show"); }
   function showTitle() {
+    if (NET.solo || NET.gone) { NET.solo = false; NET.on = false; NET.names = null; NET.client = false; NET.host = false; UT = HOME; otherCtx = null; document.body.classList.remove("online"); }
+    $("retry-btn").classList.remove("hidden"); $("retry-btn").textContent = "REMATCH"; $("full-menu-btn").textContent = "MENU"; $("second-half-btn").classList.remove("hidden");
     state = "title";
     $("hud").classList.add("hidden"); $("touch-ui").classList.add("hidden"); $("countdown").classList.remove("show");
     $("sp-hint").classList.add("hidden"); $("replay-tag").classList.add("hidden"); $("card-toast").classList.add("hidden");
@@ -1752,8 +1793,11 @@
   }
   function startMatch() {
     Sfx.init();
+    if (NET.solo) { NET.solo = false; NET.names = null; UT = HOME; }
     let seen = false; try { seen = localStorage.getItem(LS_HELP) === "1"; } catch (e) { /* ignore */ }
-    if (!seen && !autoplay) { showHelp(true); return; }
+    if (!seen && !autoplay && !NET.on) { showHelp(true); return; }
+    if (NET.on && NET.host && !NET.gone && !NET.starting) { netStart(); return; }
+    NET.starting = false;
     initMatch();
     hideOverlay();
     if (!autoplay) {
@@ -1767,6 +1811,7 @@
   let helpThenPlay = false;
   function showHelp(thenPlay) { helpThenPlay = !!thenPlay; showOverlay("help-card"); }
   function togglePause() {
+    if (NET.on) return;
     if (state === "pause") { hideOverlay(); state = pausedFrom; pausedFrom = null; return; }
     if (["play", "setpiece", "stop", "countdown", "goal", "replay"].includes(state)) {
       pausedFrom = state; state = "pause"; showOverlay("pause-card");
@@ -1784,7 +1829,8 @@
   $("pause-quit-btn").addEventListener("click", showTitle);
   $("second-half-btn").addEventListener("click", startHalf2);
   $("retry-btn").addEventListener("click", startMatch);
-  $("full-menu-btn").addEventListener("click", showTitle);
+  $("full-menu-btn").addEventListener("click", () => { if (NET.on && !NET.gone) netMenu(); else showTitle(); });
+  $("online-btn").addEventListener("click", () => netSetupCard());
 
   // ---------- main loop (fixed 60 Hz simulation) ----------
   let acc = 0, last = 0;
@@ -1803,11 +1849,278 @@
     requestAnimationFrame(frame);
   }
 
+  // ---------- online multiplayer (grok-net.js): 2 phones, host = HOME, friend = AWAY, AI fills the rest ----------
+  // The host runs the whole match (ball, AI, ref, clock, score) and sends a snapshot 20x/s; the friend sends
+  // stick + button input 20x/s, which the host feeds into the away team's controlled player. The friend's
+  // screen interpolates between snapshots ~100 ms behind.
+  const GN = window.GrokNet;
+  const r1 = v => Math.round(v * 10) / 10, r2 = v => Math.round(v * 100) / 100;
+  const nEsc = s => (GN ? GN.esc(s) : String(s));
+  function netEv(o) { if (NET.on && NET.host && NET.room && !NET.gone && !autoplay && NET.phase === "match") NET.room.broadcast(o); }
+  function onCard(html) { $("on-body").innerHTML = html; showOverlay("online-card"); }
+  function onBtn(id, fn) { const e = $(id); if (e) e.addEventListener("click", fn); }
+  function netSetupCard() {
+    if (!GN) { onCard('<h2>OFFLINE</h2><p class="note">Online play could not load.</p><button id="on-back" class="btn ghost" type="button">BACK</button>'); onBtn("on-back", showTitle); return; }
+    const pr = GN.savedProfile();
+    onCard(`<p class="kicker">ONLINE · 1 v 1</p><h2>PLAY A FRIEND</h2>
+      <p class="note">Each player on their own phone. Host = home team, friend = away team. AI plays everyone else.</p>
+      <div class="on-row"><label for="on-name">NAME</label><input id="on-name" maxlength="12" value="${nEsc(pr.hasName ? pr.name : "")}" placeholder="Your name" autocomplete="off"></div>
+      <div class="on-row"><button id="on-host" class="btn primary" type="button">HOST A ROOM</button></div>
+      <div class="on-row"><label for="on-code">CODE</label><input id="on-code" maxlength="5" placeholder="ABCDE" autocomplete="off" autocapitalize="characters"><button id="on-join" class="btn primary" type="button">JOIN</button></div>
+      <p id="on-err" class="note"></p>
+      <button id="on-back" class="btn ghost" type="button">BACK</button>`);
+    const go = (mode, code) => {
+      const name = GN.cleanName($("on-name").value || "Player");
+      GN.saveProfile(name, pr.color);
+      location.href = GN.buildUrl(GN.soloUrl(), { mode, code, name, color: pr.color, pid: GN.pid() });
+    };
+    onBtn("on-host", () => go("host", GN.makeCode()));
+    onBtn("on-join", () => {
+      const c = GN.normalizeCode($("on-code").value);
+      if (!GN.validCode(c)) { $("on-err").textContent = "Type the 5-letter code from your friend's screen."; return; }
+      go("join", c);
+    });
+    onBtn("on-back", showTitle);
+  }
+  function hudOn() {
+    $("hud").classList.remove("hidden");
+    if (document.body.classList.contains("touch")) $("touch-ui").classList.remove("hidden");
+  }
+  function chips() {
+    const l = NET.room.players();
+    let h = l.map(p => `<span class="on-chip" style="--c:${GN.cleanColor(p.color)}">${nEsc(p.name)}${p.host ? " · HOME" : " · AWAY"}${p.pid === NET.room.pid ? " (you)" : ""}</span>`).join("");
+    if (l.length < 2) h += '<span class="on-chip empty">waiting for a friend…</span>';
+    return `<div class="on-top"><span class="on-code">${nEsc(NET.room.code)}</span><div class="on-chips">${h}</div></div>`;
+  }
+  function netLobby() {
+    NET.phase = "lobby";
+    const n = NET.room.players().length, host = NET.room.isHost;
+    const hostP = NET.room.players().find(p => p.host);
+    const st = n < 2 ? `Tell your friend the code <b>${nEsc(NET.room.code)}</b> (Grok FC → PLAY ONLINE → JOIN).`
+      : host ? "Both here! Tap KICK OFF when you're ready." : `Waiting for ${nEsc(hostP ? hostP.name : "the host")} to kick off…`;
+    onCard(`<p class="kicker">GROK FC ONLINE · 1 v 1</p><h2>MATCH ROOM</h2>${chips()}<p class="note" id="on-status">${st}</p>
+      <div class="btn-row">${host ? `<button id="on-start" class="btn primary" type="button"${n < 2 ? " disabled" : ""}>KICK OFF</button>` : ""}
+      <button id="on-leave" class="btn ghost" type="button">LEAVE</button></div>`);
+    onBtn("on-start", netStart);
+    onBtn("on-leave", netLeave);
+  }
+  function netWait(msg) { onCard(`<p class="kicker">GROK FC ONLINE</p><h2>CONNECTING</h2><div class="on-spin"></div><p class="note">${nEsc(msg)}</p><button id="on-leave" class="btn ghost" type="button">CANCEL</button>`); onBtn("on-leave", netLeave); }
+  function netLeave() { try { NET.room.leave(); } catch (e) { /* ignore */ } location.href = GN.soloUrl(); }
+  function goLobby() {
+    const room = NET.room, me = room.me() || {};
+    room.markNavigating();
+    location.href = GN.buildUrl(GN.hubUrl(), { mode: room.isHost ? "host" : "join", code: room.code, name: me.name || NET.prm.name, color: me.color || NET.prm.color, pid: room.pid, slot: me.slot });
+  }
+  function netMenu() { if (NET.host) NET.room.broadcast({ t: "lobby" }, { self: true }); else netLeave(); }
+  function netStart() {
+    const l = NET.room.players();
+    if (!NET.host || l.length < 2) return;
+    const h = l.find(p => p.host), o = l.find(p => !p.host);
+    NET.rid = (NET.rid || 0) + 1;
+    NET.room.broadcast({ t: "go", rid: NET.rid, names: [h.name, o.name], colors: [GN.cleanColor(h.color), GN.cleanColor(o.color)], opid: o.pid,
+      team: cfg.team, opp: cfg.opp, len: cfg.len, ref: cfg.ref }, { self: true });
+  }
+  function startOnline(d) {
+    NET.names = d.names.map(n => GN.cleanName(n).toUpperCase()); NET.colors = d.colors; NET.rid = d.rid; NET.opid = d.opid;
+    cfg.team = d.team | 0; cfg.opp = d.opp | 0; cfg.len = d.len | 0; cfg.ref = d.ref | 0;
+    NET.phase = "match"; NET.gone = false; NET.fin = null; NET.finShown = false; NET.snaps = []; NET.lastSt = "";
+    $("second-half-btn").classList.add("hidden");
+    if (NET.host) {
+      NET.R = otherCtx = { UT: AWAY, btn: { pass: mkBtn(), shoot: mkBtn(), tackle: mkBtn() }, switchReq: false, controlledId: AWAY * 7 + 6,
+        charging: false, shotCharge: 0, autoSwitchT: 0, move: { x: 0, y: 0, m: 0, sprint: false }, last: null };
+      NET.starting = true; startMatch();
+    } else {
+      initMatch(); hideOverlay(); hudOn();
+      controlledId = AWAY * 7 + 6; state = "countdown"; cdT = 2.1;
+      $("countdown").classList.add("show"); cam.x = 0; cam.y = 0;
+    }
+  }
+  function partnerLeft() {
+    if (NET.gone) return;
+    NET.gone = true; otherCtx = null; NET.R = null;
+    const nm = NET.names ? NET.names[1] : "Your friend";
+    if (NET.names) NET.names[1] = kitOf(AWAY).name + " AI";
+    applyTeamColorsToHUD();
+    banner(`${nm} LEFT · YOU PLAY ON VS AI`, 4);
+    if (state === "full") netFullCard();
+  }
+  function hostLeft() {
+    if (NET.phase === "hostleft") return;
+    const wasMatch = NET.phase === "match" && state !== "full" && state !== "title";
+    NET.phase = "hostleft";
+    const hn = NET.names ? NET.names[0] : "The host";
+    onCard(`<p class="kicker">GROK FC ONLINE</p><h2 id="on-hostleft">HOST LEFT</h2><p class="note">${nEsc(hn)} left the match.${wasMatch ? " You can play on against the AI with the same score." : ""}</p>
+      <div class="btn-row">${wasMatch ? '<button id="on-playon" class="btn primary" type="button">PLAY ON VS AI</button>' : '<button id="on-solo" class="btn primary" type="button">PLAY SOLO</button>'}
+      <button id="on-hub" class="btn ghost" type="button">BACK TO ARCADE</button></div>`);
+    onBtn("on-playon", takeover); onBtn("on-solo", () => { location.href = GN.soloUrl(); }); onBtn("on-hub", () => { location.href = GN.hubUrl(); });
+  }
+  // friend keeps the current match going locally (still the away team) after the host left
+  function takeover() {
+    NET.client = false; NET.on = false; NET.solo = true; otherCtx = null;
+    try { NET.room.leave(); } catch (e) { /* ignore */ }
+    document.body.classList.remove("online");
+    if (NET.names) NET.names[0] = kitOf(HOME).name + " AI";
+    applyTeamColorsToHUD();
+    stats = freshStats(); sp = null; pendingSP = null; advantage = null; goalInfo = null; charging = false; shotCharge = 0;
+    for (const p of players) { p.tackleT = 0; p.stun = 0; p.celebrate = false; p.vx = p.vy = 0; }
+    ball.owner = null; ball.vx = ball.vy = ball.vz = 0; ball.z = 0; ball.passTarget = null; ball.gkHold = false;
+    hideOverlay(); hudOn(); $("countdown").classList.remove("show");
+    if (state === "half") startHalf2();
+    else beginSetpiece("kickoff", AWAY, 0, 0);
+  }
+  function netFullCard() {
+    const host = NET.host, gone = NET.gone;
+    $("retry-btn").classList.toggle("hidden", !host);
+    $("retry-btn").textContent = gone ? "PLAY AGAIN VS AI" : "REMATCH";
+    $("full-menu-btn").textContent = gone ? "MENU" : host ? "LOBBY" : "LEAVE";
+    if (!host && !gone) $("full-record").textContent = `Waiting for ${NET.names ? NET.names[0] : "the host"} to start a rematch…`;
+  }
+  // ----- host: snapshot out, input in -----
+  function snapshot() {
+    const P = [];
+    for (const p of players) {
+      const f = (p.sentOff ? 1 : 0) | (p.tackleT > 0 ? (p.tackleKind === "slide" ? 2 : 4) : 0) | (p.stun > 0.2 ? 8 : 0) | (p.celebrate ? 16 : 0) | (p.sprinting ? 32 : 0) | (Math.min(3, p.booked) << 6);
+      P.push(r1(p.x), r1(p.y), Math.round(p.vx), Math.round(p.vy), r2(p.face), f);
+    }
+    const R = NET.R;
+    return { t: "s", rid: NET.rid, st: state === "pause" ? pausedFrom : state, sc: score, ck: r1(clock), h: half, hl: halfLen, cd: r2(cdT), P,
+      b: [r1(ball.x), r1(ball.y), r1(ball.z), ball.owner ? ball.owner.id : -1, r1(ball.spin)], rf: [r1(ref.x), r1(ref.y), ref.cardT > 0 ? (ref.cardColor === "red" ? 2 : 1) : 0, ref.whistleT > 0 ? 1 : 0],
+      ci: R ? R.controlledId : -1, hc: controlledId, ch: R && R.charging ? r2(R.shotCharge) : -1, sp: sp ? [sp.team, sp.type] : null,
+      gi: (state === "goal") && goalInfo ? [goalInfo.team, goalInfo.og ? 1 : 0, goalInfo.scorer ? goalInfo.scorer.id : -1] : null,
+      fin: state === "full" ? NET.fin : null };
+  }
+  function hostInput(d) {
+    const R = NET.R; if (!R || d.rid !== NET.rid) return;
+    R.move.x = clamp(+d.x || 0, -1, 1); R.move.y = clamp(+d.y || 0, -1, 1); R.move.m = clamp(+d.m || 0, 0, 1); R.move.sprint = !!d.s;
+    const pc = Array.isArray(d.pc) ? d.pc : [0, 0, 0], dn = Array.isArray(d.dn) ? d.dn : [];
+    if (!R.last) R.last = { pc: pc.map(v => v | 0), sw: d.sw | 0 };
+    ["pass", "shoot", "tackle"].forEach((k, i) => {
+      const b = R.btn[k], c = pc[i] | 0, down = !!dn[i];
+      if (c > R.last.pc[i]) b.pressed = true;
+      if (b.down && !down) b.released = true;
+      b.down = down; R.last.pc[i] = c;
+    });
+    if ((d.sw | 0) > R.last.sw) R.switchReq = true;
+    R.last.sw = d.sw | 0;
+  }
+  // ----- friend: input out, snapshots in -----
+  function sendInput() {
+    const m = readMove(), b = localBtn;
+    NET.room.send({ t: "in", rid: NET.rid, x: r2(m.x), y: r2(m.y), m: r2(m.m), s: !!(keys.ShiftLeft || keys.ShiftRight),
+      pc: [b.pass.cnt | 0, b.shoot.cnt | 0, b.tackle.cnt | 0], dn: [b.pass.down, b.shoot.down, b.tackle.down], sw: swCnt });
+  }
+  function clientState(prev, cur) {
+    if (prev === "countdown") $("countdown").classList.remove("show");
+    if (prev === "half") hideOverlay();
+    if (cur === "countdown") { hideOverlay(); hudOn(); $("countdown").classList.add("show"); }
+    if (cur === "goal") {
+      goalT = 2.6; goalFlash = 1; Sfx.goal();
+      const k = kitOf(goalInfo ? goalInfo.team : HOME);
+      for (let i = 0; i < 70; i++) particles.push({ x: ball.x, y: ball.y, z: rand(5, 30), vx: rand(-260, 260), vy: rand(-260, 260), vz: rand(150, 420), life: rand(1, 2), c: [k.kit, k.kit2, "#fff", "#ffe14a"][i % 4], r: rand(2, 4) });
+    }
+    if (cur === "stop" || cur === "half" || cur === "full") Sfx.whistle();
+    if (cur === "half") {
+      $("half-score").textContent = `${score[0]} – ${score[1]}`; $("half-msg").textContent = "2nd half starts in a moment…";
+      $("second-half-btn").classList.add("hidden"); showOverlay("half-card");
+    }
+    if (cur === "full") NET.finShown = false;
+  }
+  function clientStep(dt) {
+    const Q = NET.snaps; if (!Q.length) return;
+    const L = Q[Q.length - 1];
+    score = L.sc.slice(); clock = L.ck; half = L.h; halfLen = L.hl;
+    if (L.ci >= 0) controlledId = L.ci;
+    NET.hostCtrl = L.hc; charging = L.ch >= 0; shotCharge = Math.max(0, L.ch);
+    sp = L.sp ? { team: L.sp[0], type: L.sp[1] } : null;
+    if (L.gi) goalInfo = { team: L.gi[0], og: !!L.gi[1], scorer: players[L.gi[2]] || null, side: Math.sign(ball.x) || 1 };
+    if (L.st && L.st !== state) { const prev = state; state = L.st; clientState(prev, state); }
+    if (goalT > 0) goalT -= dt;
+    if (state === "countdown") {
+      const el = $("countdown"), txt = L.cd > 1.4 ? "3" : L.cd > 0.7 ? "2" : L.cd > 0 ? "1" : "";
+      if (el.textContent !== txt) el.textContent = txt;
+    }
+    const hint = $("sp-hint"), showHint = state === "setpiece" && sp && sp.team === UT && SP_TEXT[sp.type];
+    if (showHint) { const hv = `<b>${SP_TEXT[sp.type][0]}</b> ${SP_TEXT[sp.type][1]}`; if (hint.innerHTML !== hv) hint.innerHTML = hv; hint.classList.remove("hidden"); }
+    else hint.classList.add("hidden");
+    if (state === "full" && L.fin && !NET.finShown) {
+      NET.finShown = true;
+      const mine = score[UT], theirs = score[1 - UT];
+      if (mine > theirs) record.w++; else if (mine < theirs) record.l++; else record.d++;
+      try { localStorage.setItem(LS_REC, JSON.stringify(record)); } catch (e) { /* ignore */ }
+      $("full-score").textContent = L.fin.sc; $("full-msg").textContent = L.fin.msg; $("full-stats").innerHTML = L.fin.st;
+      showOverlay("full-card"); netFullCard();
+    }
+    // interpolate ~100 ms behind the newest snapshot
+    const t = performance.now() - 100;
+    let A = Q[0], B = L;
+    for (let i = Q.length - 1; i > 0; i--) if (Q[i - 1].at <= t) { A = Q[i - 1]; B = Q[i]; break; }
+    const k = B.at > A.at ? clamp((t - A.at) / (B.at - A.at), 0, 1) : 1;
+    players.forEach((p, i) => {
+      const o = i * 6, a = A.P, b = B.P, f = b[o + 5];
+      const jump = Math.abs(b[o] - a[o]) + Math.abs(b[o + 1] - a[o + 1]) > 120; // kickoff resets: snap
+      p.x = jump ? b[o] : lerp(a[o], b[o], k); p.y = jump ? b[o + 1] : lerp(a[o + 1], b[o + 1], k);
+      p.vx = b[o + 2]; p.vy = b[o + 3]; p.face = a[o + 4] + angDiff(a[o + 4], b[o + 4]) * k;
+      p.sentOff = !!(f & 1); p.tackleT = f & 6 ? 0.2 : 0; p.tackleKind = f & 2 ? "slide" : "stand"; p.tackleDir = p.face;
+      p.stun = f & 8 ? 0.5 : 0; p.celebrate = !!(f & 16); p.sprinting = !!(f & 32); p.booked = f >> 6;
+      p.anim += Math.hypot(p.vx, p.vy) * dt * 0.09;
+    });
+    const ba = A.b, bb = B.b, bj = Math.abs(bb[0] - ba[0]) + Math.abs(bb[1] - ba[1]) > 200;
+    ball.x = bj ? bb[0] : lerp(ba[0], bb[0], k); ball.y = bj ? bb[1] : lerp(ba[1], bb[1], k); ball.z = lerp(ba[2], bb[2], k);
+    ball.vx = B.at > A.at ? (bb[0] - ba[0]) / ((B.at - A.at) / 1000) : 0; ball.vy = B.at > A.at ? (bb[1] - ba[1]) / ((B.at - A.at) / 1000) : 0;
+    ball.spin = bb[4]; ball.owner = L.b[3] >= 0 ? players[L.b[3]] : null;
+    ref.x = lerp(A.rf[0], B.rf[0], k); ref.y = lerp(A.rf[1], B.rf[1], k);
+    ref.cardT = L.rf[2] ? 1 : 0; ref.cardColor = L.rf[2] === 2 ? "red" : "yellow"; ref.whistleT = L.rf[3] ? 1 : 0;
+    while (Q.length > 3 && Q[1].at < t - 400) Q.shift();
+  }
+  function netTick() {
+    if (!NET.on || NET.phase !== "match" || !NET.room) return;
+    if (NET.host && !NET.gone) NET.room.broadcast(snapshot());
+    else if (NET.client) sendInput();
+  }
+  function onNetMsg(d) {
+    if (!d || typeof d !== "object") return;
+    if (d.t === "go") { startOnline(d); return; }
+    if (d.t === "lobby") { goLobby(); return; }
+    if (NET.host) { if (d.t === "in") hostInput(d); return; }
+    if (!NET.client || NET.phase !== "match") return;
+    if (d.t === "s") { if (d.rid !== NET.rid || !Array.isArray(d.P) || d.P.length !== players.length * 6) return; d.at = performance.now(); NET.snaps.push(d); if (NET.snaps.length > 40) NET.snaps.shift(); NET.nSnap = (NET.nSnap || 0) + 1; return; }
+    if (d.t === "bn") { const el = $("call-banner"); el.textContent = String(d.x).slice(0, 60); el.classList.add("show"); bannerT = +d.d || 1.2; return; }
+    if (d.t === "card") {
+      $("toast-pic").className = "cardpic " + (d.c === "red" ? "red" : "yellow"); $("toast-title").textContent = String(d.ti); $("toast-sub").textContent = String(d.su);
+      $("card-toast").classList.remove("hidden"); toastT = 2.4; Sfx.card();
+      if (Array.isArray(d.log)) { cardLog = d.log.map(c => ({ color: c.color === "red" ? "red" : "yellow", text: String(c.text), team: c.team | 0 })); renderCardLog(); }
+    }
+  }
+  function netBoot(prm) {
+    NET.on = true; NET.host = prm.mode === "host"; NET.client = !NET.host; NET.prm = prm; NET.phase = "wait";
+    UT = NET.host ? HOME : AWAY;
+    document.body.classList.add("online");
+    const room = NET.room = GN.joinFromParams(prm, { max: 2 });
+    netWait("Connecting to room " + prm.code + "…");
+    room.on("open", () => { GN.ui.badge(room, { pos: "tl", label: room.code }); if (NET.phase === "wait") netLobby(); });
+    room.on("players", () => {
+      if (NET.phase === "lobby") { netLobby(); return; }
+      if (NET.host && NET.phase === "match" && room.players().length < 2) partnerLeft();
+    });
+    room.on("message", onNetMsg);
+    room.on("error", e => {
+      if (e && e.code === "hostleft" && NET.client) { hostLeft(); return; }
+      GN.ui.error(e);
+    });
+    room.start();
+    setInterval(netTick, 50);
+  }
+
   // ---------- test hooks ----------
   window.__fc = {
     get state() { return state; }, get stats() { return stats; }, get score() { return score.slice(); }, cfg,
     get clock() { return clock; }, get players() { return players; }, get ball() { return ball; },
     get controlledId() { return controlledId; }, get sp() { return sp; }, get half() { return half; },
+    get net() { return { on: NET.on, host: NET.host, client: NET.client, phase: NET.phase, gone: NET.gone, names: NET.names, rid: NET.rid, nSnap: NET.nSnap | 0, ut: UT, ctrl: controlledId, hostCtrl: NET.hostCtrl, remoteCtrl: NET.R ? NET.R.controlledId : -1 }; },
+    get room() { return NET.room; },
+    // test-only: force a goal / jump the clock on the host
+    _goal(team) { if (state === "play" || state === "setpiece") { if (state === "setpiece") endSetpiece(); ball.lastTouch = active(team).find(p => p.role === "FWD") || null; ball.x = teamDir(team) * (HW + 10); goalScored(team); } },
+    _clock(c, h) { if (h) half = h; clock = c; },
     setAutoplay(v) { autoplay = !!v; },
     // Simulate a whole match quickly (no rendering, bot plays the home side aggressively). Returns a summary.
     simulate(opts) {
@@ -1829,5 +2142,6 @@
   setupTouch();
   initMatch();
   showTitle();
+  { const prm = GN && GN.params(); if (prm) netBoot(prm); }
   requestAnimationFrame(frame);
 })();

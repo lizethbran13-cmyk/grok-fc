@@ -220,3 +220,25 @@ body.touch .help-grid .kb { display: none; }
   body.touch .help-grid li { margin-bottom: 3px; }
   #help-card h2 { font-size: 24px; margin: 2px 0 6px; }
 }
+
+/* ---------- online (1 v 1 on two phones) ---------- */
+body.online #pause-btn { display: none; }
+#online-card { max-width: 520px; }
+#online-card .on-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; justify-content: center; flex-wrap: wrap; }
+#online-card .on-row label { font-size: 11px; letter-spacing: .14em; font-weight: 800; opacity: .8; min-width: 46px; text-align: right; }
+#online-card input { font: 800 18px inherit; font-family: inherit; padding: 10px 12px; border-radius: 10px; border: 2px solid rgba(255,255,255,.25);
+  background: rgba(0,0,0,.35); color: #fff; width: 170px; text-transform: uppercase; letter-spacing: .1em; }
+#online-card #on-code { width: 120px; letter-spacing: .3em; }
+.on-top { display: flex; align-items: center; gap: 10px; justify-content: center; flex-wrap: wrap; margin: 8px 0; }
+.on-code { border: 2px solid #00e8ff; color: #00e8ff; border-radius: 10px; padding: 4px 12px; font-weight: 900; font-size: 22px; letter-spacing: .25em; }
+.on-chips { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+.on-chip { border: 2px solid var(--c, #889); border-radius: 999px; padding: 4px 12px; font-weight: 800; font-size: 13px; background: rgba(0,0,0,.3); }
+.on-chip.empty { border-style: dashed; opacity: .6; }
+.on-spin { width: 34px; height: 34px; border: 4px solid rgba(255,255,255,.2); border-top-color: #00e8ff; border-radius: 50%; margin: 10px auto; animation: onspin 1s linear infinite; }
+@keyframes onspin { to { transform: rotate(360deg); } }
+.btn:disabled { opacity: .45; cursor: default; }
+@media (max-height: 500px) {
+  #online-card .on-row { margin: 4px 0; }
+  #online-card input { padding: 7px 10px; font-size: 16px; }
+  .on-code { font-size: 18px; }
+}

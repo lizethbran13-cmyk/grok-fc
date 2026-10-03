@@ -60,6 +60,7 @@
       </div>
       <div class="btn-row">
         <button id="play-btn" type="button" class="btn primary">KICK OFF</button>
+        <button id="online-btn" type="button" class="btn ghost">PLAY ONLINE</button>
         <button id="help-btn" type="button" class="btn ghost">HOW TO PLAY</button>
       </div>
       <p id="title-record" class="note"></p>
@@ -93,6 +94,11 @@
       <p class="tips">⭐ You always control the player with the <b class="yel">yellow arrow</b>. It switches automatically to whoever is closest to the ball.
         Tackle from the front — tackles from behind or after the ball has gone are fouls, and really reckless ones get a card.</p>
       <button id="help-ok" type="button" class="btn primary">GOT IT — LET'S PLAY</button>
+    </div>
+
+    <div class="card hidden" id="online-card">
+      <div class="stripe"></div>
+      <div id="on-body"></div>
     </div>
 
     <div class="card hidden" id="pause-card">
@@ -129,6 +135,8 @@
 
   <div id="countdown"></div>
 
+  <script src="peerjs.min.js"></script>
+  <script src="grok-net.js"></script>
   <script src="game.js"></script>
 </body>
 </html>
