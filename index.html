@@ -7,12 +7,16 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#0a1f14" />
-  <title>GROK FC 2.0</title>
+  <title>GROK FC 3.0</title>
   <link rel="stylesheet" href="style.css" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230a1f14'/%3E%3Ccircle cx='32' cy='32' r='18' fill='%23ff6a00'/%3E%3Ccircle cx='32' cy='32' r='10' fill='%2300e8ff'/%3E%3Ccircle cx='32' cy='32' r='4' fill='%23fff'/%3E%3C/svg%3E" />
 </head>
 <body>
   <canvas id="game"></canvas>
+  <div id="flash"></div>
+  <div id="goal-text"></div>
+  <div id="name-tag" class="hidden"></div>
+  <div id="power" class="hidden"><div id="power-fill"></div><span>POWER</span></div>
 
   <div id="hud" class="hidden">
     <div id="scoreboard">
@@ -21,6 +25,9 @@
       <div class="team away"><span id="score-away" class="score">0</span><span id="name-away" class="name">RIVAL</span><span class="kit"></span></div>
     </div>
     <button id="pause-btn" type="button" aria-label="Pause">II</button>
+    <button id="mute-btn" type="button" aria-label="Commentary voice on/off">🔊</button>
+    <canvas id="minimap"></canvas>
+    <div id="comm"><i>🎙</i><span></span></div>
     <div id="call-banner"></div>
     <div id="card-toast" class="hidden">
       <div id="toast-pic" class="cardpic yellow"></div>
@@ -35,7 +42,7 @@
   <div id="touch-ui" class="hidden" aria-hidden="true">
     <div id="stick-zone"><div id="stick-base"><div id="stick"></div></div><div id="stick-hint">MOVE</div></div>
     <div id="action-btns">
-      <button type="button" id="btn-tackle"><span id="lbl-tackle" class="lbl">TACKLE</span></button>
+      <button type="button" id="btn-sprint"><span id="lbl-sprint" class="lbl">SPRINT</span><span id="sub-sprint" class="sub"></span></button>
       <button type="button" id="btn-pass"><span id="lbl-pass" class="lbl">PASS</span></button>
       <button type="button" id="btn-shoot"><span id="lbl-shoot" class="lbl">SHOOT</span><span id="sub-shoot" class="sub">hold = power</span></button>
     </div>
@@ -46,13 +53,14 @@
       <div class="stripe"></div>
       <div class="title-row">
         <div>
-          <p class="kicker">ARCADE FOOTBALL · 7 v 7</p>
-          <h1>GROK FC <span class="ver">2.0</span></h1>
-          <p class="tag">FAIR REF · EASY CONTROLS · MORE GOALS</p>
+          <p class="kicker">ARCADE FOOTBALL · 7 v 7 · NOW IN 3D</p>
+          <h1>GROK FC <span class="ver">3.0</span></h1>
+          <p class="tag">5 STADIUMS · DREAM TEAM · LIVE COMMENTARY</p>
         </div>
       </div>
       <div class="settings">
-        <div class="set"><label>YOUR TEAM</label><div id="pick-team" class="swatches"></div></div>
+        <div class="set wide"><label>STADIUM</label><div id="pick-stad" class="stads"></div></div>
+        <div class="set"><label>YOUR TEAM</label><div id="pick-mode" class="segs"></div><div id="pick-team" class="swatches"></div><div id="dream-sum" class="dream-sum hidden"></div></div>
         <div class="set"><label>OPPONENT</label><div id="pick-opp" class="swatches"></div></div>
         <div class="set"><label>OPPONENT LEVEL</label><div id="pick-diff" class="segs"></div></div>
         <div class="set"><label>REFEREE</label><div id="pick-ref" class="segs"></div><p id="ref-note" class="note"></p></div>
@@ -74,27 +82,29 @@
         <div>
           <h3>📱 Phone</h3>
           <ul>
-            <li><b>Left thumb</b> anywhere = joystick</li>
-            <li><b>PASS</b> — passes to the teammate you point at (dashed ring)</li>
-            <li><b>SHOOT</b> — hold for power, let go to shoot. Aims for the open corner.</li>
-            <li><b>SPRINT</b> — hold while you have the ball</li>
-            <li>Defending: <b>TACKLE</b> near the ball, <b>PRESS</b> (hold) to chase, <b>SWITCH</b> to change player</li>
+            <li><b>Left thumb</b> anywhere on the left = joystick. Up on the stick = up the pitch.</li>
+            <li><b>PASS</b> — to the teammate you point at (white ring shows who)</li>
+            <li><b>SHOOT</b> — hold for power, let go. It aims for the open corner for you.</li>
+            <li><b>SPRINT</b> — hold to run faster</li>
+            <li>Defending: big button = <b>TACKLE</b>, <b>SWITCH</b> = change player, hold <b>SPRINT</b> (no stick) to chase the ball</li>
           </ul>
         </div>
         <div class="kb">
           <h3>⌨️ Keyboard</h3>
           <ul>
-            <li><kbd>WASD</kbd>/<kbd>Arrows</kbd> move · <kbd>Shift</kbd> sprint</li>
-            <li><kbd>J</kbd>/<kbd>Z</kbd> pass (switch when defending)</li>
-            <li><kbd>K</kbd>/<kbd>X</kbd> shoot — hold for power (press when defending)</li>
-            <li><kbd>L</kbd>/<kbd>C</kbd>/<kbd>Space</kbd> tackle · <kbd>Q</kbd>/<kbd>Tab</kbd> switch · <kbd>Esc</kbd> pause</li>
+            <li><kbd>WASD</kbd>/<kbd>Arrows</kbd> move · <kbd>Shift</kbd>/<kbd>L</kbd> sprint</li>
+            <li><kbd>J</kbd>/<kbd>Z</kbd> pass (switch player when defending)</li>
+            <li><kbd>K</kbd>/<kbd>X</kbd>/<kbd>Space</kbd> shoot — hold for power (tackle when defending)</li>
+            <li><kbd>Q</kbd>/<kbd>Tab</kbd> switch · <kbd>Esc</kbd> pause</li>
           </ul>
         </div>
       </div>
-      <p class="tips">⭐ You always control the player with the <b class="yel">yellow arrow</b>. It switches automatically to whoever is closest to the ball.
+      <p class="tips">⭐ You always control the player with the <b class="yel">yellow arrow</b>. It switches automatically to whoever is closest to the ball, and the ball sticks to your feet when you dribble.
         Tackle from the front — tackles from behind or after the ball has gone are fouls, and really reckless ones get a card.</p>
       <button id="help-ok" type="button" class="btn primary">GOT IT — LET'S PLAY</button>
     </div>
+
+    <div class="card hidden wide" id="dream-card"></div>
 
     <div class="card hidden" id="online-card">
       <div class="stripe"></div>
@@ -104,7 +114,7 @@
     <div class="card hidden" id="pause-card">
       <p class="kicker">PAUSED</p>
       <h2>TIME OUT</h2>
-      <div id="pause-help" class="hidden note">PASS = pass to the ringed teammate · SHOOT = hold &amp; release · TACKLE near the ball · PRESS (hold) chases · SWITCH changes player</div>
+      <div id="pause-help" class="hidden note">PASS = pass to the ringed teammate · SHOOT = hold &amp; release · SPRINT = hold · Defending: big button tackles, SWITCH changes player, hold SPRINT to chase</div>
       <div class="btn-row">
         <button id="resume-btn" type="button" class="btn primary">RESUME</button>
         <button id="pause-help-btn" type="button" class="btn ghost">CONTROLS</button>
@@ -135,8 +145,12 @@
 
   <div id="countdown"></div>
 
+  <script src="three.min.js"></script>
   <script src="peerjs.min.js"></script>
   <script src="grok-net.js"></script>
+  <script src="dream.js"></script>
+  <script src="commentary.js"></script>
+  <script src="fc3d.js"></script>
   <script src="game.js"></script>
 </body>
 </html>

@@ -1,10 +1,13 @@
-/* GROK FC 2.0 — arcade 7v7 football. Fair referee, simple controls, phone-first. */
+/* GROK FC 3.0 — arcade 7v7 football in 3D. Fair referee, simple phone controls, 5 stadiums, Dream Team, commentator. */
 (() => {
   "use strict";
 
   const $ = id => document.getElementById(id);
   const canvas = $("game");
-  const ctx = canvas.getContext("2d");
+  const mmCv = $("minimap"), mm = mmCv.getContext("2d");
+  const has3D = !!(window.FC3D && FC3D.init(canvas));
+  const Dream = window.FCDream, Comm = window.FCComm;
+  const STADS = window.FC3D ? FC3D.STADIUMS : [{ name: "GROK PARK", mods: { roll: 1, bounce: 0.48, grip: 1 } }];
   const TAU = Math.PI * 2;
 
   // ---------- pitch & physics constants (1 unit ~ 10 cm) ----------
@@ -43,6 +46,11 @@
     { r: "FWD", x: 0.10, y: 0 },
   ];
   const ROLE_SPEED = { GK: 150, DEF: 166, MID: 172, FWD: 178 };
+  const ROLE_BASE = Dream.ROLE_BASE;
+  const HSTYLE = ["short", "buzz", "curly", "short", "bun", "afro", "mohawk"];
+  // Team definitions for this match (classic kit teams or Dream Teams) + their formations.
+  let TD = [null, null], FORMS = [FORM, FORM], tdKey = "";
+  let MOD = STADS[0].mods;
 
   // Opponent difficulty. Home AI teammates use HOME_AI.
   const DIFFS = [
@@ -61,7 +69,7 @@
 
   // ---------- settings ----------
   const LS_SET = "grokfc2.settings", LS_HELP = "grokfc2.help", LS_REC = "grokfc2.record";
-  const cfg = { team: 0, opp: 1, diff: 1, ref: 1, len: 1 };
+  const cfg = { team: 0, opp: 1, diff: 1, ref: 1, len: 1, stadium: 0, mode: 0, coop: false };
   try { Object.assign(cfg, JSON.parse(localStorage.getItem(LS_SET) || "{}")); } catch (e) { /* ignore */ }
   function saveCfg() { try { localStorage.setItem(LS_SET, JSON.stringify(cfg)); } catch (e) { /* ignore */ } }
   let record = { w: 0, d: 0, l: 0 };
@@ -76,8 +84,8 @@
   const gauss = () => (Math.random() + Math.random() + Math.random() - 1.5) * 1.15;
   function angDiff(a, b) { let d = b - a; while (d > Math.PI) d -= TAU; while (d < -Math.PI) d += TAU; return d; }
   const teamDir = t => (t === HOME ? 1 : -1);
-  const kitOf = t => TEAMS[t === HOME ? cfg.team : cfg.opp];
-  const diffFor = t => (t === AWAY ? DIFFS[NET.on ? 1 : cfg.diff] : HOME_AI);
+  const kitOf = t => TD[t] || TEAMS[t === HOME ? cfg.team : cfg.opp];
+  const diffFor = t => (t === AWAY ? DIFFS[NET.on && !NET.coop ? 1 : cfg.diff] : HOME_AI);
 
   // ---------- state ----------
   let W = 800, H = 600, dpr = 1, S = 1;
@@ -86,9 +94,10 @@
   let score = [0, 0], half = 1, clock = 0, halfLen = 120, kickoffFirst = HOME;
   let sp = null, stopT = 0, pendingSP = null, advantage = null;
   let goalT = 0, goalInfo = null, replay = null, replayFrames = null, kickoffNext = AWAY;
+  const GOAL_TIME = 3.4;
+  let lastShotT = -9, stadBuilt = -1, crowdJump = 0;
   let now = 0, cdT = 0;
   let stats = null;
-  const cam = { x: 0, y: 0 };
   let particles = [];
   let autoplay = false;
   let toastT = 0, bannerT = 0;
@@ -98,23 +107,55 @@
   let roles = { chaser: [null, null], presser: [null, null], cover: [null, null], support: [null, null] };
   let passPreview = null;
   let goalFlash = 0;
-  // ---------- online (2 phones, host-authoritative). UT = the team the *current* input context controls ----------
-  let UT = HOME, moveSrc = null, otherCtx = null;
-  const NET = { on: false, host: false, client: false, room: null, names: null, colors: null, R: null, gone: false, snaps: [], hostCtrl: -1, lastSt: "", fin: null };
-  function setCtrl(team, id) { if (team === UT) controlledId = id; else if (otherCtx) otherCtx.controlledId = id; }
-  const isHumanTeam = t => t === UT || (!!otherCtx && t !== UT);
-  // run fn with the remote player's input context swapped in (host only)
+  // ---------- online (host-authoritative). UT = the team the *current* input context controls ----------
+  // 1 v 1: host = HOME, friend = AWAY.  CO-OP: host + 1-2 friends all on HOME vs the AI.  Each human has an input context;
+  // the host's lives in the globals below, remote ones in `remotes` and get swapped into the globals with withCtx().
+  let UT = HOME, moveSrc = null, remotes = [], curR = null, hostSaved = null;
+  const NET = { on: false, host: false, client: false, room: null, names: null, colors: null, R: null, gone: false, snaps: [], hostCtrl: -1, lastSt: "", fin: null, coop: false, people: [], humans: [] };
+  // every human context except the one currently loaded into the globals
+  function others() { const o = []; if (curR && hostSaved) o.push(hostSaved); for (const r of remotes) if (r !== curR) o.push(r); return o; }
+  const ctrlTaken = (team, id) => (team === UT && id === controlledId) || others().some(c => c.UT === team && c.controlledId === id);
+  const takenByOther = p => others().some(c => c.UT === p.team && c.controlledId === p.id);
+  const isHumanTeam = t => t === UT || others().some(c => c.UT === t);
+  const isHumanCtrl = p => ctrlTaken(p.team, p.id);
+  function humanPlayers(t) {
+    const out = [];
+    if (t === UT) { const c = controlled(); if (c) out.push(c); }
+    for (const c of others()) if (c.UT === t) { const q = players[c.controlledId]; if (q && !q.sentOff) out.push(q); }
+    return out;
+  }
+  // give player `id` to a human on `team`: the current one if `prefer`, otherwise whoever's player is closest to him
+  function setCtrl(team, id, prefer) {
+    if (ctrlTaken(team, id)) return;
+    const cands = [];
+    if (team === UT) cands.push(null);
+    for (const c of others()) if (c.UT === team) cands.push(c);
+    if (!cands.length) return;
+    let pick = cands[0];
+    if (cands.length > 1 && !(prefer && team === UT)) {
+      const t = players[id]; let bd = 1e9;
+      for (const c of cands) { const cp = players[c ? c.controlledId : controlledId]; const d = cp && !cp.sentOff ? Math.hypot(cp.x - t.x, cp.y - t.y) : 5e8; if (d < bd) { bd = d; pick = c; } }
+    }
+    if (pick) { pick.controlledId = id; pick.autoSwitchT = 0.5; } else { controlledId = id; autoSwitchT = 0.5; }
+  }
+  // run fn with a remote player's input context swapped in (host only)
   function withCtx(c, fn) {
     const H = { UT, btn, switchReq, controlledId, charging, shotCharge, autoSwitchT, moveSrc };
-    otherCtx = H;
+    const pR = curR, pH = hostSaved;
+    curR = c; hostSaved = H;
     UT = c.UT; btn = c.btn; switchReq = c.switchReq; controlledId = c.controlledId; charging = c.charging; shotCharge = c.shotCharge; autoSwitchT = c.autoSwitchT; moveSrc = c.move;
     try { fn(); } finally {
       c.switchReq = switchReq; c.controlledId = controlledId; c.charging = charging; c.shotCharge = shotCharge; c.autoSwitchT = autoSwitchT;
       UT = H.UT; btn = H.btn; switchReq = H.switchReq; controlledId = H.controlledId; charging = H.charging; shotCharge = H.shotCharge; autoSwitchT = H.autoSwitchT; moveSrc = H.moveSrc;
-      otherCtx = c;
+      curR = pR; hostSaved = pH;
     }
   }
-  const ctxFor = (team, fn) => { if (team === UT) fn(); else if (otherCtx) withCtx(otherCtx, fn); };
+  // run fn as the human who controls player `id` (falls back to any human on that team)
+  function ctxForPlayer(team, id, fn) {
+    if (team === UT && controlledId === id) { fn(); return; }
+    const r = remotes.find(q => q.UT === team && q.controlledId === id) || (team === UT ? null : remotes.find(q => q.UT === team));
+    if (r) withCtx(r, fn); else if (team === UT) fn();
+  }
 
   function freshStats() {
     return { shots: [0, 0], onTarget: [0, 0], fouls: [0, 0], yellows: [0, 0], reds: [0, 0], poss: [0, 0],
@@ -155,83 +196,34 @@
   })();
 
   // ---------- canvas ----------
-  let pitchCv = null;
-  const MX = 120, MY = 150;
   function resize() {
     dpr = Math.min(window.devicePixelRatio || 1, 2);
     W = Math.max(1, window.innerWidth); H = Math.max(1, window.innerHeight);
-    canvas.width = Math.floor(W * dpr); canvas.height = Math.floor(H * dpr);
     canvas.style.width = W + "px"; canvas.style.height = H + "px";
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    // Zoom: show ~640 units across, so players stay big on a phone.
-    S = Math.min(W / 640, H / (430 * TILT));
-    buildPitch();
+    if (has3D) FC3D.resize(W, H, dpr);
+    const portrait = H > W * 1.05, touchUI = document.body.classList.contains("touch");
+    const mw = Math.round(Math.min(touchUI ? (portrait ? 88 : 104) : 140, (portrait ? H : W) * 0.18)), mh = Math.round(mw * PH / PW);
+    const cw = portrait ? mh : mw, ch = portrait ? mw : mh;
+    mmCv.width = Math.round(cw * dpr); mmCv.height = Math.round(ch * dpr); mmCv.style.width = cw + "px"; mmCv.style.height = ch + "px";
+    mm.setTransform(dpr, 0, 0, dpr, 0, 0);
+    document.body.classList.toggle("portrait", portrait);
   }
   window.addEventListener("resize", resize);
-
-  // Pitch is pre-rendered once per resize (cheap frames on phones).
-  function buildPitch() {
-    const k = Math.min(S * dpr, 4000 / (PW + 2 * MX));
-    const cw = Math.ceil((PW + 2 * MX) * k), ch = Math.ceil((PH + 2 * MY) * TILT * k);
-    pitchCv = document.createElement("canvas"); pitchCv.width = cw; pitchCv.height = ch;
-    const c = pitchCv.getContext("2d");
-    const X = x => (x + HW + MX) * k, Y = y => (y + HH + MY) * TILT * k;
-    c.fillStyle = "#1d6e35"; c.fillRect(0, 0, cw, ch);
-    c.fillStyle = "#1a1530"; c.fillRect(0, 0, cw, Y(-HH - 46));
-    for (let i = 0; i < 420; i++) {
-      const cx = Math.random() * cw, cy = Math.random() * Y(-HH - 52);
-      c.fillStyle = ["#ff8a40", "#40d0ff", "#e060a0", "#ffe14a", "#ffffff", "#7a5cff"][i % 6];
-      c.globalAlpha = 0.5 + Math.random() * 0.4;
-      c.beginPath(); c.arc(cx, cy, (1.6 + Math.random()) * k, 0, TAU); c.fill();
-    }
-    c.globalAlpha = 1;
-    const boardY0 = Y(-HH - 46), boardY1 = Y(-HH - 30);
-    for (let i = 0; i < 9; i++) {
-      const x0 = X(-HW - 60 + i * (PW + 120) / 9), x1 = X(-HW - 60 + (i + 1) * (PW + 120) / 9);
-      c.fillStyle = i % 2 ? "#ff6a00" : "#0b2540"; c.fillRect(x0, boardY0, x1 - x0 - 2, boardY1 - boardY0);
-      c.fillStyle = i % 2 ? "#0b1020" : "#00e8ff";
-      c.font = `900 ${Math.round(9 * k)}px Trebuchet MS, sans-serif`; c.textAlign = "center"; c.textBaseline = "middle";
-      c.fillText(i % 3 === 0 ? "GROK FC 2.0" : i % 3 === 1 ? "FAIR PLAY" : "GROK", (x0 + x1) / 2, (boardY0 + boardY1) / 2);
-    }
-    c.fillStyle = "#0b2540"; c.fillRect(0, Y(HH + 40), cw, Y(HH + 52) - Y(HH + 40));
-    const n = 14;
-    for (let i = 0; i < n; i++) {
-      c.fillStyle = i % 2 ? "#2f9e4c" : "#36ad55";
-      c.fillRect(X(-HW + i * PW / n), Y(-HH), X(-HW + (i + 1) * PW / n) - X(-HW + i * PW / n) + 1, Y(HH) - Y(-HH));
-    }
-    c.globalAlpha = 0.07; c.fillStyle = "#000";
-    for (let i = 0; i < 900; i++) c.fillRect(X(rand(-HW, HW)), Y(rand(-HH, HH)), 2 * k, 1 * k);
-    c.globalAlpha = 1;
-    c.strokeStyle = "rgba(255,255,255,0.92)"; c.lineWidth = Math.max(1.5, 2.4 * k);
-    c.strokeRect(X(-HW), Y(-HH), X(HW) - X(-HW), Y(HH) - Y(-HH));
-    c.beginPath(); c.moveTo(X(0), Y(-HH)); c.lineTo(X(0), Y(HH)); c.stroke();
-    c.beginPath(); c.ellipse(X(0), Y(0), CENTER_R * k, CENTER_R * TILT * k, 0, 0, TAU); c.stroke();
-    const spot = (x, y) => { c.fillStyle = "#fff"; c.beginPath(); c.ellipse(X(x), Y(y), 3 * k, 3 * TILT * k, 0, 0, TAU); c.fill(); };
-    spot(0, 0);
-    for (const s of [-1, 1]) {
-      const gx = s * HW;
-      c.strokeRect(Math.min(X(gx), X(gx - s * BOX_W)), Y(-BOX_H / 2), Math.abs(X(gx - s * BOX_W) - X(gx)), Y(BOX_H / 2) - Y(-BOX_H / 2));
-      c.strokeRect(Math.min(X(gx), X(gx - s * SIX_W)), Y(-SIX_H / 2), Math.abs(X(gx - s * SIX_W) - X(gx)), Y(SIX_H / 2) - Y(-SIX_H / 2));
-      spot(gx - s * PEN_SPOT, 0);
-      c.beginPath();
-      const a0 = s < 0 ? -0.93 : Math.PI - 0.93, a1 = s < 0 ? 0.93 : Math.PI + 0.93;
-      c.ellipse(X(gx - s * PEN_SPOT), Y(0), 55 * k, 55 * TILT * k, 0, a0, a1); c.stroke();
-      for (const t of [-1, 1]) {
-        c.strokeStyle = "#fff"; c.beginPath(); c.moveTo(X(gx), Y(t * HH)); c.lineTo(X(gx), Y(t * HH) - 22 * k); c.stroke();
-        c.fillStyle = "#ffe14a"; c.fillRect(X(gx), Y(t * HH) - 22 * k, 9 * k * -s, 6 * k);
-        c.strokeStyle = "rgba(255,255,255,0.92)";
-      }
-    }
-  }
+  window.addEventListener("orientationchange", () => setTimeout(resize, 200));
 
   // ---------- entities ----------
   function makePlayer(team, slot) {
-    const f = FORM[slot];
+    const f = FORMS[team][slot], pd = TD[team].players[slot], base = ROLE_BASE[f.r];
+    // Player stats vs. the role baseline (classic players sit exactly on it, so they play like 2.0).
+    const pacK = 1 + (pd.pac - base.pac) / base.pac * 0.4;
     return {
-      id: team * 7 + slot, team, slot, role: f.r, num: NUMS[slot],
-      name: NAME_POOL[team === HOME ? cfg.team : cfg.opp][slot],
+      id: team * 7 + slot, team, slot, role: f.r, num: pd.num,
+      name: pd.name, cel: pd.cel || "", pid: pd.id || "",
+      shoK: clamp(1 - (pd.sho - base.sho) / 100 * 1.6, 0.55, 1.6), shoPow: (pd.sho - base.sho) * 2.5,
+      pasK: clamp(1 - (pd.pas - base.pas) / 100 * 1.8, 0.5, 1.6), defAdd: (pd.def - base.def) / 100 * 0.6,
+      gkK: clamp(1 + (pd.def - base.def) / 100 * 0.8, 0.7, 1.25),
       x: 0, y: 0, vx: 0, vy: 0, face: team === HOME ? 0 : Math.PI,
-      spd: ROLE_SPEED[f.r], stamina: 100, anim: Math.random() * 6,
+      spd: ROLE_SPEED[f.r] * pacK, stamina: 100, anim: Math.random() * 6,
       tackleT: 0, tackleCd: 0, tackleDir: 0, tackleKind: "stand", tackleWon: false, tackleHit: null, tackleWin: 0.6,
       stun: 0, booked: 0, sentOff: false, fouls: 0,
       runT: 0, runCd: rand(1, 3), runX: 0, runY: 0, decideT: 0, lastKickT: -9, noTouch: 0, holdT: 0,
@@ -259,7 +251,30 @@
     return Math.abs(x - gx) < BOX_W && Math.abs(y) < BOX_H / 2 && Math.sign(x || 1) === Math.sign(gx);
   }
 
+  const hexRGB = c => { const n = parseInt(c.slice(1), 16); return [n >> 16, (n >> 8) & 255, n & 255]; };
+  const colDist = (a, b) => { const x = hexRGB(a), y = hexRGB(b); return Math.hypot(x[0] - y[0], x[1] - y[1], x[2] - y[2]); };
+  function classicDef(idx) {
+    const t = TEAMS[idx];
+    return Object.assign({}, t, { form: "2-3-1", players: FORM.map((f, s) => Object.assign({ id: "", name: NAME_POOL[idx][s], short: NAME_POOL[idx][s], num: NUMS[s], role: f.r,
+      skin: SKINS[s], hair: HAIR[s], hs: HSTYLE[s], h: 1, cel: "" }, ROLE_BASE[f.r])) });
+  }
+  function myDream() { return cfg.mode === 1 ? (Dream.load() || Dream.sanitize(Dream.DEFAULT)) : null; }
+  function buildTeams() {
+    const dts = NET.on ? (NET.dts || [null, null]) : [myDream(), null];
+    TD = [dts[0] ? Dream.teamDef(dts[0]) : classicDef(cfg.team), dts[1] ? Dream.teamDef(dts[1]) : classicDef(cfg.opp)];
+    if (colDist(TD[0].kit, TD[1].kit) < 110) { // kit clash: the away side changes
+      if (!dts[1]) { for (let i = 0; i < TEAMS.length; i++) if (i !== cfg.team && colDist(TEAMS[i].kit, TD[0].kit) >= 110) { TD[1] = classicDef(i); break; } }
+      else { const k = TD[1]; const alt = colDist(k.kit2, TD[0].kit) >= 110 ? k.kit2 : (colDist("#f4f4f4", TD[0].kit) >= 110 ? "#f4f4f4" : "#23262d"); TD[1] = Object.assign({}, k, { kit: alt, kit2: k.kit, socks: k.kit, num: alt === "#f4f4f4" || alt === "#ffd23a" ? "#16182a" : "#fff" }); }
+    }
+    for (const td of TD) for (const p of td.players) p.short = p.short || p.name.split(" ").slice(-1)[0].replace(/[^A-ZÁÉÍÓÚÑ'\-]/g, "").slice(0, 11);
+    FORMS = TD.map(td => Dream.FORMATIONS[td.form] || FORM);
+    MOD = (STADS[cfg.stadium] || STADS[0]).mods;
+    if (has3D && stadBuilt !== cfg.stadium) { stadBuilt = cfg.stadium; FC3D.setStadium(cfg.stadium); }
+    const key = JSON.stringify(TD.map(t => [t.kit, t.kit2, t.gk, t.form, t.players.map(p => p.name + p.num)]));
+    if (has3D && key !== tdKey) { tdKey = key; FC3D.setTeams(TD); }
+  }
   function initMatch() {
+    buildTeams();
     players = [];
     for (let t = 0; t < 2; t++) for (let s = 0; s < 7; s++) players.push(makePlayer(t, s));
     ball = makeBall();
@@ -271,17 +286,18 @@
     controlledId = HOME * 7 + 6;
     for (const p of players) { const s = shapeTarget(p, null); p.x = s.x; p.y = s.y; }
     applyTeamColorsToHUD();
+    lastShotT = -9;
   }
 
   // ---------- input ----------
   const keys = {};
   const mkBtn = () => ({ down: false, pressed: false, released: false });
-  let btn = { pass: mkBtn(), shoot: mkBtn(), tackle: mkBtn() };
+  let btn = { pass: mkBtn(), shoot: mkBtn(), sprint: mkBtn() };
   const localBtn = btn;
   let switchReq = false, anyTap = false, swCnt = 0;
   function bPress(b) { if (!b.down) { b.down = true; b.pressed = true; b.cnt = (b.cnt || 0) + 1; } anyTap = true; }
   function bRelease(b) { if (b.down) { b.down = false; b.released = true; } }
-  const KEYMAP = { KeyJ: "pass", KeyZ: "pass", KeyK: "shoot", KeyX: "shoot", KeyL: "tackle", KeyC: "tackle", Space: "tackle" };
+  const KEYMAP = { KeyJ: "pass", KeyZ: "pass", KeyK: "shoot", KeyX: "shoot", Space: "shoot", KeyL: "sprint", KeyC: "sprint", ShiftLeft: "sprint", ShiftRight: "sprint" };
   window.addEventListener("keydown", e => {
     if (["Space", "Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) e.preventDefault();
     keys[e.code] = true;
@@ -304,12 +320,14 @@
     if (stick.active && (stick.x || stick.y)) { x = stick.x; y = stick.y; }
     const m = Math.hypot(x, y);
     if (m > 1) { x /= m; y /= m; }
+    // stick/keys are screen-relative: up = away from the camera (always "up-field" for you)
+    if (has3D) { const B = FC3D.basis, sx = x, sy = -y; x = sx * B.rx + sy * B.fx; y = sx * B.rz + sy * B.fz; }
     return { x, y, m: Math.min(1, m) };
   }
   function clearEdges() {
     for (const k in btn) { btn[k].pressed = false; btn[k].released = false; }
     switchReq = false; anyTap = false;
-    if (otherCtx) { for (const k in otherCtx.btn) { otherCtx.btn[k].pressed = false; otherCtx.btn[k].released = false; } otherCtx.switchReq = false; }
+    for (const r of remotes) { for (const k in r.btn) { r.btn[k].pressed = false; r.btn[k].released = false; } r.switchReq = false; }
   }
 
   const isTouch = () => matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
@@ -318,7 +336,7 @@
     document.body.classList.add("touch");
     const zone = $("stick-zone"), base = $("stick-base"), knob = $("stick");
     let sid = null, ox = 0, oy = 0;
-    const R = 50;
+    const R = 46;
     const place = (x, y) => { const z = zone.getBoundingClientRect(); base.style.left = (x - z.left - 60) + "px"; base.style.top = (y - z.top - 60) + "px"; };
     zone.addEventListener("touchstart", e => {
       e.preventDefault(); Sfx.init();
@@ -338,7 +356,9 @@
         }
         knob.style.transform = `translate(${dx}px,${dy}px)`;
         const m = Math.hypot(dx, dy) / R;
-        stick.x = m < 0.15 ? 0 : dx / R; stick.y = m < 0.15 ? 0 : dy / R;
+        // small dead-zone, then reach full speed at ~70% of the throw so a short thumb move is enough
+        const g = m < 0.12 ? 0 : Math.min(1, (m - 0.12) / 0.58) / (m || 1);
+        stick.x = dx / R * g; stick.y = dy / R * g;
       }
     }, { passive: false });
     const end = e => {
@@ -355,13 +375,13 @@
       const up = e => { e.preventDefault(); bRelease(b); el.classList.remove("down"); };
       el.addEventListener("touchend", up, { passive: false }); el.addEventListener("touchcancel", up, { passive: false });
     };
-    bind("btn-pass", btn.pass); bind("btn-shoot", btn.shoot); bind("btn-tackle", btn.tackle);
+    bind("btn-pass", btn.pass); bind("btn-shoot", btn.shoot); bind("btn-sprint", btn.sprint);
   }
   canvas.addEventListener("pointerdown", () => { anyTap = true; });
 
   // ---------- AI positioning ----------
   function shapeTarget(p, possOverride) {
-    const dir = teamDir(p.team), f = FORM[p.slot];
+    const dir = teamDir(p.team), f = FORMS[p.team][p.slot];
     const poss = possOverride !== undefined ? possOverride : possTeam();
     const inPoss = poss === p.team;
     const bx = (ball ? ball.x : 0) * dir, by = ball ? ball.y : 0;
@@ -377,7 +397,7 @@
   }
 
   function accel(p, dvx, dvy, dt, k) {
-    const a = 1 - Math.exp(-(k || 10) * dt);
+    const a = 1 - Math.exp(-(k || 10) * MOD.grip * dt);
     p.vx += (dvx - p.vx) * a; p.vy += (dvy - p.vy) * a;
   }
   function steerTo(p, tx, ty, spd, dt, arrive) {
@@ -445,21 +465,21 @@
   }
 
   function computeRoles() {
-    const ctrl = controlled();
     for (let t = 0; t < 2; t++) {
       const out = active(t).filter(p => p.role !== "GK" && p.stun <= 0 && p.tackleT <= 0);
-      const pool = (t === HOME) ? out.filter(p => p !== ctrl) : out;
+      const hc = humanPlayers(t); // human-controlled players are never given AI roles
+      const pool = out.filter(p => !hc.includes(p));
       const owner = ball.owner;
       const tx = owner ? owner.x : ball.x + ball.vx * 0.35, ty = owner ? owner.y : ball.y + ball.vy * 0.35;
       pool.sort((a, b) => Math.hypot(a.x - tx, a.y - ty) - Math.hypot(b.x - tx, b.y - ty));
       roles.chaser[t] = roles.presser[t] = roles.cover[t] = roles.support[t] = null;
       if (!owner) {
         let c = pool[0] || null;
-        if (t === HOME && c && ctrl && dist(ctrl, ball) < dist(c, ball) + 20) c = null;
+        if (c && hc.some(h => dist(h, ball) < dist(c, ball) + 20)) c = null;
         roles.chaser[t] = c;
       } else if (owner.team !== t) {
         let pr = pool[0] || null;
-        if (t === HOME && ctrl && pr && dist(ctrl, owner) < 140) { roles.cover[t] = pr; pr = null; }
+        if (pr && hc.some(h => dist(h, owner) < 140)) { roles.cover[t] = pr; pr = null; }
         roles.presser[t] = pr;
         if (!roles.cover[t]) roles.cover[t] = pool[1] || null;
       } else {
@@ -475,7 +495,7 @@
     o = o || {};
     ball.owner = null; ball.gkHold = false;
     ball.vx = vx; ball.vy = vy; ball.vz = vz; if (vz > 0) ball.z = Math.max(ball.z, 1);
-    ball.lastTouch = p; ball.lastTeam = p.team; ball.passTarget = o.target || null; ball.shot = !!o.shot; ball.kickT = now;
+    ball.lastTouch = p; ball.lastTeam = p.team; ball.passTarget = o.target || null; ball.shot = !!o.shot; ball.kickT = now; ball.userShot = !!o.user;
     p.lastKickT = now; p.noTouch = 0.22;
     Sfx.kick(Math.min(1, Math.hypot(vx, vy) / 900));
   }
@@ -493,7 +513,7 @@
     const lead = m.runT > 0 ? 1.15 : 1;
     const tx = clamp(m.x + m.vx * t * lead, -HW + 10, HW - 10), ty = clamp(m.y + m.vy * t * lead, -HH + 10, HH - 10);
     const d = Math.hypot(tx - p.x, ty - p.y);
-    const err = o.user ? 0.015 : 0.05 * D.pass;
+    const err = (o.user ? 0.015 : 0.05 * D.pass) * p.pasK;
     const a = Math.atan2(ty - p.y, tx - p.x) + gauss() * err;
     const loft = o.loft || (d > 170 && laneOpen(p, tx, ty, p.team) < 0.4);
     let spd, vz = 0;
@@ -502,27 +522,30 @@
     if (o.maxSpd) spd = Math.min(spd, o.maxSpd);
     kick(p, Math.cos(a) * spd, Math.sin(a) * spd, vz, { target: m });
     m.receiveT = 1.6;
-    if (isHumanTeam(p.team) && m.role !== "GK" && !autoplay) setCtrl(p.team, m.id);
+    if (m.runT > 0 && d > 160) comment("through", p, 2);
+    else if (o.user ? chance(0.35) : chance(0.08)) comment("pass", p, 1);
+    if (isHumanTeam(p.team) && m.role !== "GK" && !autoplay) setCtrl(p.team, m.id, p.team === UT && p.id === controlledId);
   }
-  function shoot(p, power, aimY, errMul) {
+  function shoot(p, power, aimY, errMul, user) {
     const dir = teamDir(p.team), gx = dir * HW;
     const gk = gkOf(1 - p.team);
     let side;
     if (aimY != null && Math.abs(aimY) > 0.3) side = Math.sign(aimY);
     else side = gk ? (gk.y > p.y * 0.15 ? -1 : 1) : (p.y > 0 ? -1 : 1);
-    let ty = side * (GOAL_W / 2 - 15);
+    let ty = side * (GOAL_W / 2 - (user ? 12 : 15)); // shot assist: humans aim tighter into the corner
     const d = Math.hypot(gx - p.x, ty - p.y);
-    const spd = 470 + 560 * power;
-    const err = (7 + d * 0.055) * errMul * (power > 0.95 ? 1.5 : 1) * (p.stamina < 25 ? 1.25 : 1);
+    const spd = 470 + 560 * power + p.shoPow;
+    const err = (7 + d * 0.055) * errMul * p.shoK * (power > 0.95 ? 1.5 : 1) * (p.stamina < 25 ? 1.25 : 1);
     ty += gauss() * err;
     const t = d / spd;
     let h = rand(4, 26) + (power > 0.95 ? rand(0, 22) : 0) + gauss() * err * 0.15;
     h = Math.max(1, h);
     const vz = (h + 0.5 * GRAV * t * t) / t;
     const a = Math.atan2(ty - p.y, gx - p.x);
-    kick(p, Math.cos(a) * spd, Math.sin(a) * spd, vz, { shot: true });
-    stats.shots[p.team]++;
+    kick(p, Math.cos(a) * spd, Math.sin(a) * spd, vz, { shot: true, user: !!user });
+    stats.shots[p.team]++; lastShotT = now;
     if (Math.abs(ty) < GOAL_W / 2 - 3 && h < GOAL_H - 2) stats.onTarget[p.team]++;
+    comment(d > 330 ? "longshot" : "shot", p, 3);
   }
   function header(p) {
     p.headCd = 0.6;
@@ -536,8 +559,9 @@
       const h = rand(4, 30), vz = (h - ball.z + 0.5 * GRAV * t * t) / t;
       const a = Math.atan2(ty - p.y, gx - p.x);
       kick(p, Math.cos(a) * spd, Math.sin(a) * spd, vz, { shot: true });
-      stats.shots[p.team]++;
+      stats.shots[p.team]++; lastShotT = now;
       if (p.team === HOME) banner("HEADER!", 1);
+      comment("header", p, 3);
     } else {
       const a = (dir > 0 ? 0 : Math.PI) + rand(-0.6, 0.6);
       kick(p, Math.cos(a) * 360, Math.sin(a) * 360, 140, {});
@@ -553,7 +577,7 @@
     const s = kind === "slide" ? 300 : 230;
     p.vx = dx / l * s; p.vy = dy / l * s;
     p.tackleCd = kind === "slide" ? 1.1 : 0.6;
-    p.tackleHit = null; p.tackleWon = false; p.tackleWin = winP;
+    p.tackleHit = null; p.tackleWon = false; p.tackleWin = clamp(winP + (p.defAdd || 0), 0.05, 0.95);
     p.stamina = Math.max(0, p.stamina - (kind === "slide" ? 10 : 4));
     return true;
   }
@@ -571,6 +595,7 @@
           if (owner) {
             owner.stun = Math.max(owner.stun, 0.25); stats.tackles[p.team]++;
             if (p.team === HOME) banner("GREAT TACKLE!", 0.9);
+            if (chance(0.6)) comment("tackle", p, 2);
           }
           if (p.tackleKind === "stand" && chance(0.55)) { takePossession(p); p.tackleT = Math.min(p.tackleT, 0.05); }
           else {
@@ -616,6 +641,7 @@
     if (!chance(pFoul)) {
       stats.playOn++;
       if (v.team === HOME || t.team === HOME) banner("PLAY ON", 0.7);
+      if (chance(0.5)) comment("playon", t, 1);
       return;
     }
     callFoul(t, v, { sev, fromBehind, late, slide: t.tackleKind === "slide", dogso: isDogso(t, v, hadBall), inBox: inPenArea(v.x, v.y, t.team) });
@@ -662,7 +688,7 @@
     if (!f.inBox && (!dec || dec.color === "yellow") && advantageAvailable(v.team, v)) {
       advantage = { t: 2.5, team: v.team, x: v.x, y: v.y, fouler: t, card: dec };
       stats.advantages++; ref.signalT = 1.4;
-      banner("ADVANTAGE!", 1.2);
+      banner("ADVANTAGE!", 1.2); comment("advantage", t, 2);
       return;
     }
     stopForFoul(t, v, f.inBox, dec);
@@ -670,8 +696,8 @@
   function stopForFoul(t, v, inBox, dec) {
     const team = v.team, dir = teamDir(team);
     ball.owner = null;
-    if (inBox) { stats.penalties++; banner("PENALTY!", 1.8); stopPlay("penalty", team, dir * (HW - PEN_SPOT), 0, dec ? 2.0 : 1.4); }
-    else { banner("FOUL — FREE KICK", 1.3); stopPlay("freekick", team, v.x, v.y, dec ? 1.9 : 1.0); }
+    if (inBox) { stats.penalties++; banner("PENALTY!", 1.8); stopPlay("penalty", team, dir * (HW - PEN_SPOT), 0, dec ? 2.0 : 1.4); comment("penalty", t, 3); }
+    else { banner("FOUL — FREE KICK", 1.3); stopPlay("freekick", team, v.x, v.y, dec ? 1.9 : 1.0); if (!dec) comment("foul", t, 2); }
     if (dec) issueCard(t, dec);
   }
   function updateAdvantage(dt) {
@@ -713,7 +739,7 @@
     $("toast-title").textContent = (color === "red" ? "RED CARD" : "YELLOW CARD") + (afterAdv ? " (after advantage)" : "");
     $("toast-sub").textContent = `#${p.num} ${p.name} (${kitOf(p.team).name}) — ${reason}`;
     $("card-toast").classList.remove("hidden"); toastT = 2.4;
-    Sfx.card();
+    Sfx.card(); comment(color === "red" ? "red" : "yellow", p, 3);
     netEv({ t: "card", c: color, ti: $("toast-title").textContent, su: $("toast-sub").textContent, log: cardLog.slice(0, 4) });
   }
   function renderCardLog() {
@@ -733,7 +759,7 @@
     corner: ["CORNER", "PASS or SHOOT to cross it in"],
     throwin: ["THROW-IN", "Aim with the stick · PASS to throw"],
     goalkick: ["GOAL KICK", "PASS short · SHOOT long"],
-    penalty: ["PENALTY", "Hold ↑ or ↓ to pick a corner · press SHOOT"],
+    penalty: ["PENALTY", "Point the stick at a corner · press SHOOT"],
   };
   function beginSetpiece(type, team, x, y) {
     state = "setpiece";
@@ -812,11 +838,15 @@
       $("sp-hint").innerHTML = `<b>${SP_TEXT[type][0]}</b> ${SP_TEXT[type][1]}`;
       $("sp-hint").classList.remove("hidden");
     } else if (type === "penalty" && !autoplay) {
-      $("sp-hint").innerHTML = "<b>SAVE IT!</b> Hold ↑ or ↓ when they shoot to dive";
+      $("sp-hint").innerHTML = "<b>SAVE IT!</b> Point the stick at a corner to dive";
       $("sp-hint").classList.remove("hidden");
     } else {
       banner(SP_TEXT[type][0], 1.2);
     }
+    if (type === "kickoff" && !autoplay) {
+      if (score[0] + score[1] === 0 && half === 1 && clock < 2) comment("kickoff", taker, 3);
+      else if (half === 2 && Math.abs(clock - halfLen) < 2) comment("second", taker, 3);
+    } else if (type === "corner") comment("corner", taker, 1);
   }
   function stepSetpiece(dt) {
     sp.t += dt;
@@ -832,7 +862,7 @@
     const ready = sp.t > sp.wait && Math.hypot(t.spx - t.x, t.spy - t.y) < 8;
     if (!ready) { if (sp.t > 4) { t.x = t.spx; t.y = t.spy; } return; }
     if (isHumanTeam(sp.team) && !autoplay) {
-      ctxFor(sp.team, () => {
+      ctxForPlayer(sp.team, t.id, () => {
         if (btn.pass.pressed) takeSP("pass");
         else if (btn.shoot.pressed) takeSP("shoot");
         else if (sp.t > 7) takeSP("pass");
@@ -903,7 +933,7 @@
   function doSwitch(force) {
     const ctrl = controlled();
     const tx = ball.x + ball.vx * 0.25, ty = ball.y + ball.vy * 0.25;
-    const cands = active(UT).filter(p => p.role !== "GK" && (force || p !== ctrl));
+    const cands = active(UT).filter(p => p.role !== "GK" && (force || p !== ctrl) && !takenByOther(p));
     if (!cands.length) return;
     cands.sort((a, b) => Math.hypot(a.x - tx, a.y - ty) - Math.hypot(b.x - tx, b.y - ty));
     controlledId = cands[0].id; autoSwitchT = 0.6;
@@ -920,7 +950,7 @@
     const tx = ball.x + ball.vx * 0.25, ty = ball.y + ball.vy * 0.25;
     let best = null, bd = 1e9;
     for (const p of players) {
-      if (p.team !== UT || p.sentOff || p.role === "GK" || p.stun > 0) continue;
+      if (p.team !== UT || p.sentOff || p.role === "GK" || p.stun > 0 || takenByOther(p)) continue;
       const d = Math.hypot(p.x - tx, p.y - ty); if (d < bd) { bd = d; best = p; }
     }
     if (!best) return;
@@ -940,9 +970,9 @@
     } else {
       charging = false; shotCharge = 0;
       const homePoss = ball.owner && ball.owner.team === UT;
-      if (!homePoss) {
+      if (!homePoss) { // defending: PASS = switch player, SHOOT = tackle
         if (btn.pass.pressed) doSwitch();
-        if (btn.tackle.pressed) userTackle(p);
+        if (btn.shoot.pressed) userTackle(p);
       }
     }
   }
@@ -955,7 +985,7 @@
   function userShoot(p) {
     const power = clamp(0.35 + 0.65 * Math.min(1, shotCharge), 0.35, 1);
     const inp = readMove();
-    shoot(p, power, inp.m > 0.3 ? inp.y : null, 0.75);
+    shoot(p, power, inp.m > 0.3 ? inp.y : null, 0.75, true);
     charging = false; shotCharge = 0;
   }
   function userTackle(p) {
@@ -973,14 +1003,20 @@
     const inp = readMove();
     const hasBall = ball.owner === p;
     const homePoss = ball.owner && ball.owner.team === UT;
-    const sprint = ((moveSrc ? moveSrc.sprint : (keys.ShiftLeft || keys.ShiftRight)) || (btn.tackle.down && homePoss)) && p.stamina > 5;
+    const sprint = ((moveSrc && moveSrc.sprint) || btn.sprint.down) && p.stamina > 5;
     const spd = p.spd * (hasBall ? 0.95 : 1) * (sprint ? 1.3 : 1);
     p.sprinting = false;
     if (inp.m > 0.12) {
       const m = Math.min(1, inp.m * 1.15);
-      accel(p, inp.x * spd * m, inp.y * spd * m, dt, 12);
+      let mx = inp.x, my = inp.y;
+      // loose-ball magnet: if you're roughly heading for a nearby loose ball, steer onto it
+      if (!ball.owner && ball.z < 20) {
+        const bx = ball.x + ball.vx * 0.15 - p.x, by = ball.y + ball.vy * 0.15 - p.y, bd = Math.hypot(bx, by);
+        if (bd < 70 && bd > 1 && (mx * bx + my * by) / bd > 0.45) { mx = mx * 0.55 + bx / bd * 0.45; my = my * 0.55 + by / bd * 0.45; const l = Math.hypot(mx, my) || 1; mx /= l; my /= l; }
+      }
+      accel(p, mx * spd * m, my * spd * m, dt, 12);
       p.sprinting = sprint;
-    } else if (!homePoss && btn.shoot.down) { // PRESS: hold to chase the ball automatically
+    } else if (!homePoss && btn.sprint.down) { // PRESS: hold SPRINT without the stick to chase the ball automatically
       const tgt = ball.owner || ball;
       steerTo(p, tgt.x + ball.vx * 0.15, tgt.y + ball.vy * 0.15, p.spd * 1.25, dt, 4);
       p.sprinting = true;
@@ -1116,7 +1152,7 @@
   }
   function gkUpdate(g, dt) {
     const dir = teamDir(g.team), gx = -dir * HW;
-    const skill = diffFor(g.team).gk;
+    const skill = diffFor(g.team).gk * g.gkK;
     if (ball.owner === g) {
       g.holdT -= dt; accel(g, 0, 0, dt);
       if (g.holdT <= 0) {
@@ -1159,9 +1195,12 @@
   }
   function gkTouch(g) {
     const s = Math.hypot(ball.vx, ball.vy);
-    const skill = diffFor(g.team).gk;
+    const skill = diffFor(g.team).gk * g.gkK;
+    // a hard shot right at the edge of the keeper's reach can beat him at full stretch
+    const stretch = Math.hypot(g.x - ball.x, g.y - ball.y);
+    if (ball.shot && s > 520 && stretch > 17 && chance(clamp((stretch - 17) / 13, 0, 1) * (1.1 - skill * 0.7) * (ball.userShot ? 1 : 0.3))) { g.noTouch = 0.35; return; }
     if (ball.shot && s > 300) {
-      stats.saves[g.team]++;
+      stats.saves[g.team]++; comment("save", g, 3);
       const pCatch = clamp(skill * (1.3 - s / 850), 0.1, 0.92);
       if (chance(pCatch)) { catchBall(g); banner("SAVED!", 1); return; }
       ball.vx = -ball.vx * rand(0.25, 0.45); ball.vy = ball.vy * 0.3 + rand(-1, 1) * 220; ball.vz = rand(60, 160);
@@ -1180,7 +1219,8 @@
     for (const p of players) {
       if (p.sentOff || p.noTouch > 0 || p.stun > 0 || p.tackleT > 0) continue;
       const isGK = p.role === "GK" && inPenArea(p.x, p.y, p.team);
-      const reach = isGK ? (p.diving > 0 ? 30 : 21) : 13, zmax = isGK ? GOAL_H + 14 : 24;
+      const human = !autoplay && p.role !== "GK" && isHumanCtrl(p);
+      const reach = isGK ? (p.diving > 0 ? 30 : 21) : human ? 17 : 13, zmax = isGK ? GOAL_H + 14 : 24;
       const d = Math.hypot(p.x - ball.x, p.y - ball.y);
       if (d < reach && ball.z < zmax && d < bd) { best = p; bd = d; }
     }
@@ -1226,11 +1266,11 @@
       ball.vz -= GRAV * dt; ball.z += ball.vz * dt;
       if (ball.z <= 0) {
         ball.z = 0;
-        if (ball.vz < -70) { ball.vz = -ball.vz * 0.48; ball.vx *= 0.86; ball.vy *= 0.86; } else ball.vz = 0;
+        if (ball.vz < -70) { ball.vz = -ball.vz * MOD.bounce; ball.vx *= 0.86; ball.vy *= 0.86; } else ball.vz = 0;
       }
       const k = Math.exp(-0.15 * dt); ball.vx *= k; ball.vy *= k;
     } else {
-      const k = Math.exp(-1.15 * dt); ball.vx *= k; ball.vy *= k;
+      const k = Math.exp(-1.15 * MOD.roll * dt); ball.vx *= k; ball.vy *= k;
       if (Math.hypot(ball.vx, ball.vy) < 8) { ball.vx = 0; ball.vy = 0; }
     }
     if (ball.shot && Math.hypot(ball.vx, ball.vy) < 250) ball.shot = false;
@@ -1242,11 +1282,11 @@
       const ay = Math.abs(ball.y);
       if (Math.abs(ay - GOAL_W / 2) < 5 && ball.z < GOAL_H) {
         ball.vx = -ball.vx * 0.6; ball.vy += Math.sign(ball.y) * (ay < GOAL_W / 2 ? -60 : 60); ball.x = sx * (HW - 5);
-        banner("OFF THE POST!", 1); ball.shot = false; return;
+        banner("OFF THE POST!", 1); comment("post", ball.lastTouch, 3); ball.shot = false; return;
       }
       if (ay < GOAL_W / 2 && Math.abs(ball.z - GOAL_H) < 5 && ball.vx * sx > 0) {
         ball.vz = -Math.abs(ball.vz) * 0.5 - 40; ball.vx = -ball.vx * 0.4; ball.x = sx * (HW - 5);
-        banner("CROSSBAR!", 1); ball.shot = false; return;
+        banner("CROSSBAR!", 1); comment("bar", ball.lastTouch, 3); ball.shot = false; return;
       }
     }
     if (ax > HW + 1) {
@@ -1257,6 +1297,7 @@
         banner("CORNER", 1); stopPlay("corner", 1 - defTeam, sx * HW, (ball.y > 0 ? 1 : -1) * HH, 0.9);
       } else {
         banner("GOAL KICK", 1); stopPlay("goalkick", defTeam, sx * (HW - SIX_W * 0.6), clamp(ball.y, -40, 40) * 0.5, 0.9);
+        if (now - lastShotT < 2.5) comment("miss", ball.lastTouch, 2);
       }
       return;
     }
@@ -1275,9 +1316,11 @@
       for (const p of active(team)) { if (p.role === "GK") continue; const d = Math.abs(p.x - teamDir(team) * HW); if (d < bd) { bd = d; scorer = p; } }
     }
     goalInfo = { team, scorer, og, side: Math.sign(ball.x) || 1 };
-    state = "goal"; goalT = autoplay ? 0.4 : 2.6; goalFlash = autoplay ? 0 : 1;
+    state = "goal"; goalT = autoplay ? 0.4 : GOAL_TIME; goalFlash = autoplay ? 0 : 1;
     kickoffNext = 1 - team; advantage = null; charging = false; shotCharge = 0;
     banner(og ? "OWN GOAL!" : `GOAL! ${scorer ? scorer.name : ""}`, 2.5);
+    const sp0 = scorer && !og ? scorer.pid : "";
+    comment(og ? "owngoal" : sp0 === "goat" ? "goat" : sp0 === "flea" ? "flea" : "goal", scorer, 4, team);
     if (!autoplay) {
       const k = kitOf(team);
       for (let i = 0; i < 70; i++) {
@@ -1316,10 +1359,10 @@
   }
   function stepPlay(dt) {
     clock += dt;
-    if (!autoplay) { handleUserActions(dt); if (otherCtx && state === "play") withCtx(otherCtx, () => handleUserActions(dt)); }
+    if (!autoplay) { handleUserActions(dt); for (const r of remotes) { if (state !== "play") break; withCtx(r, () => handleUserActions(dt)); } }
     if (state !== "play") return;
     autoSwitch(dt);
-    if (otherCtx) withCtx(otherCtx, () => autoSwitch(dt));
+    for (const r of remotes) withCtx(r, () => autoSwitch(dt));
     computeRoles();
     for (const p of players) {
       if (p.sentOff) continue;
@@ -1327,10 +1370,13 @@
       if (p.tackleT > 0) { stepTackle(p, dt); continue; }
       if (p.stun > 0) { accel(p, 0, 0, dt, 5); integrate(p, dt); continue; }
       if (p.role === "GK") gkUpdate(p, dt);
-      else if (p.id === controlledId && p.team === UT) { if (autoplay) botControl(p, dt); else userControl(p, dt); }
-      else if (otherCtx && p.team !== UT && p.id === otherCtx.controlledId) withCtx(otherCtx, () => userControl(p, dt));
-      else if (ball.owner === p) aiCarrier(p, dt);
-      else aiOffBall(p, dt);
+      else if (p.id === controlledId && p.team === UT) { if (autoplay || pilot) botControl(p, dt); else userControl(p, dt); }
+      else {
+        const r = remotes.length ? remotes.find(q => q.UT === p.team && q.controlledId === p.id) : null;
+        if (r) withCtx(r, () => userControl(p, dt));
+        else if (ball.owner === p) aiCarrier(p, dt);
+        else aiOffBall(p, dt);
+      }
       if (!p.sprinting) p.stamina = Math.min(100, p.stamina + 9 * dt);
       else if (p.id !== controlledId) p.stamina = Math.max(0, p.stamina - 12 * dt);
       integrate(p, dt);
@@ -1366,6 +1412,7 @@
       if (autoplay) { startHalf2(); return; }
       $("half-score").textContent = `${score[0]} – ${score[1]}`;
       $("half-msg").textContent = `Shots ${stats.shots[0]}–${stats.shots[1]} · Fouls ${stats.fouls[0] + stats.fouls[1]} · Cards ${stats.yellows[0] + stats.yellows[1] + stats.reds[0] + stats.reds[1]}`;
+      comment("half", null, 4);
       showOverlay("half-card");
       if (NET.on) { $("second-half-btn").classList.add("hidden"); $("half-msg").textContent += " · 2nd half starts in a moment…"; setTimeout(() => { if (state === "half") startHalf2(); }, 3500); }
     } else endMatch();
@@ -1378,6 +1425,7 @@
     state = "full";
     $("sp-hint").classList.add("hidden");
     if (autoplay) return;
+    comment("full", null, 4);
     const h = score[0], a = score[1], mine = score[UT], theirs = score[1 - UT];
     if (mine > theirs) record.w++; else if (mine < theirs) record.l++; else record.d++;
     try { localStorage.setItem(LS_REC, JSON.stringify(record)); } catch (e) { /* ignore */ }
@@ -1418,7 +1466,7 @@
       integrate(p, dt);
     }
     stepRef(dt);
-    if (goalT > 1.8) recordFrame(dt);
+    if (goalT > GOAL_TIME - 0.8) recordFrame(dt);
     else if (!replayFrames && !autoplay && !NET.on) replayFrames = recBuf.slice(-125);
     if (goalT <= 0) {
       for (const p of players) p.celebrate = false;
@@ -1476,234 +1524,92 @@
       p.x += Math.sin(now * 0.8 + p.id) * 0.3; p.y += Math.cos(now * 0.6 + p.id) * 0.2;
     }
     ball.x = Math.sin(now * 0.7) * 40; ball.y = Math.cos(now * 0.5) * 25; ball.z = 6 + Math.abs(Math.sin(now * 3)) * 20;
-    cam.x = Math.sin(now * 0.2) * 120; cam.y = 0;
   }
 
-  // ---------- rendering ----------
-  const PX = x => W / 2 + (x - cam.x) * S;
-  const PY = (y, z) => H / 2 + (y - cam.y) * S * TILT - (z || 0) * S * ZK;
-  function updateCam(dt, fx, fy, fz) {
-    const viewW = W / S, viewH = H / (S * TILT);
-    const mx = Math.max(0, HW + MX - viewW / 2 - 10), my = Math.max(0, HH + MY - viewH / 2 - 10);
-    const tx = clamp(fx, -mx, mx), ty = clamp(fy - (fz || 0) * 0.3, -my, my);
-    const k = 1 - Math.exp(-5 * dt);
-    cam.x += (tx - cam.x) * k; cam.y += (ty - cam.y) * k;
-  }
-  function rr(x, y, w, h, r) {
-    ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
-    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
-  }
-  function drawGoal(side) {
-    const gx = side * HW, bx = gx + side * GOAL_D, gw = GOAL_W / 2;
-    const P = (x, y, z) => [PX(x), PY(y, z)];
-    const a = P(gx, -gw, 0), b = P(gx, -gw, GOAL_H), c = P(gx, gw, GOAL_H), d = P(gx, gw, 0);
-    const a2 = P(bx, -gw, 0), b2 = P(bx, -gw, GOAL_H * 0.8), c2 = P(bx, gw, GOAL_H * 0.8), d2 = P(bx, gw, 0);
-    if (Math.max(a[0], a2[0]) < -50 || Math.min(a[0], a2[0]) > W + 50) return;
-    ctx.fillStyle = "rgba(235,245,255,0.16)";
-    const poly = pts => { ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]); ctx.closePath(); ctx.fill(); };
-    poly([a2, b2, c2, d2]); poly([b, c, c2, b2]); poly([a, b, b2, a2]); poly([d, c, c2, d2]);
-    ctx.strokeStyle = "rgba(235,245,255,0.35)"; ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let i = 1; i < 6; i++) {
-      const y = -gw + i * GOAL_W / 6, p1 = P(gx, y, GOAL_H), p2 = P(bx, y, GOAL_H * 0.8), p3 = P(bx, y, 0);
-      ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); ctx.lineTo(p3[0], p3[1]);
-    }
-    ctx.stroke();
-    ctx.strokeStyle = "#fff"; ctx.lineWidth = Math.max(2, 3 * S); ctx.lineCap = "round";
-    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(c[0], c[1]); ctx.lineTo(d[0], d[1]); ctx.stroke();
-  }
-  function drawPlayer(p, flags) {
-    const k = kitOf(p.team), u = S;
-    const sx = PX(p.x), sy = PY(p.y, 0);
-    if (sx < -60 || sx > W + 60 || sy < -80 || sy > H + 60) return;
-    ctx.fillStyle = "rgba(0,0,0,0.3)";
-    ctx.beginPath(); ctx.ellipse(sx, sy, 9 * u, 3.6 * u, 0, 0, TAU); ctx.fill();
-    const shirt = p.role === "GK" ? k.gk : k.kit;
-    const trim = p.role === "GK" ? "#111" : k.kit2;
-    const skin = SKINS[p.slot], hair = HAIR[p.slot];
-    const sliding = flags !== undefined ? (flags & 1) : ((p.tackleT > 0 && p.tackleKind === "slide") || p.stun > 0.2);
-    if (sliding) {
-      const fl = Math.cos(p.tackleT > 0 ? p.tackleDir : p.face) < 0 ? -1 : 1;
-      ctx.save(); ctx.translate(sx, sy - 4 * u); ctx.scale(fl, 1);
-      ctx.strokeStyle = k.socks; ctx.lineWidth = 3.4 * u; ctx.lineCap = "round";
-      ctx.beginPath(); ctx.moveTo(2 * u, 0); ctx.lineTo(14 * u, 2 * u); ctx.stroke();
-      ctx.fillStyle = k.shorts; rr(-3 * u, -3 * u, 7 * u, 6 * u, 2 * u); ctx.fill();
-      ctx.fillStyle = shirt; rr(-15 * u, -4 * u, 13 * u, 8 * u, 3 * u); ctx.fill();
-      ctx.strokeStyle = "rgba(0,0,0,0.55)"; ctx.lineWidth = 1.2; ctx.stroke();
-      ctx.fillStyle = skin; ctx.beginPath(); ctx.arc(-18 * u, -2 * u, 4.4 * u, 0, TAU); ctx.fill();
-      ctx.restore();
-      return;
-    }
-    const spn = Math.min(1, Math.hypot(p.vx || 0, p.vy || 0) / 60);
-    const sw = Math.sin(p.anim) * spn;
-    ctx.lineCap = "round";
-    ctx.strokeStyle = k.socks; ctx.lineWidth = 3.6 * u;
-    ctx.beginPath();
-    ctx.moveTo(sx - 2.6 * u, sy - 11 * u); ctx.lineTo(sx - 2.6 * u + sw * 4 * u, sy - 1 * u);
-    ctx.moveTo(sx + 2.6 * u, sy - 11 * u); ctx.lineTo(sx + 2.6 * u - sw * 4 * u, sy - 1 * u);
-    ctx.stroke();
-    ctx.fillStyle = "#111"; ctx.beginPath();
-    ctx.ellipse(sx - 2.6 * u + sw * 4 * u, sy - 0.5 * u, 2.6 * u, 1.4 * u, 0, 0, TAU);
-    ctx.ellipse(sx + 2.6 * u - sw * 4 * u, sy - 0.5 * u, 2.6 * u, 1.4 * u, 0, 0, TAU); ctx.fill();
-    ctx.fillStyle = k.shorts; rr(sx - 6 * u, sy - 15.5 * u, 12 * u, 6 * u, 1.5 * u); ctx.fill();
-    ctx.strokeStyle = shirt; ctx.lineWidth = 3.2 * u;
-    ctx.beginPath();
-    if (p.celebrate) {
-      ctx.moveTo(sx - 6 * u, sy - 25 * u); ctx.lineTo(sx - 10 * u, sy - 35 * u);
-      ctx.moveTo(sx + 6 * u, sy - 25 * u); ctx.lineTo(sx + 10 * u, sy - 35 * u);
-    } else {
-      ctx.moveTo(sx - 6.5 * u, sy - 25 * u); ctx.lineTo(sx - 8 * u - sw * 3 * u, sy - 16 * u);
-      ctx.moveTo(sx + 6.5 * u, sy - 25 * u); ctx.lineTo(sx + 8 * u + sw * 3 * u, sy - 16 * u);
-    }
-    ctx.stroke();
-    ctx.fillStyle = shirt; rr(sx - 7 * u, sy - 27.5 * u, 14 * u, 13.5 * u, 3 * u); ctx.fill();
-    ctx.strokeStyle = "rgba(0,0,0,0.6)"; ctx.lineWidth = 1.2; ctx.stroke();
-    ctx.fillStyle = trim; ctx.fillRect(sx - 7 * u, sy - 23 * u, 14 * u, 2 * u);
-    const fl = Math.cos(p.face);
-    ctx.fillStyle = skin; ctx.beginPath(); ctx.arc(sx + fl * 0.8 * u, sy - 31.5 * u, 4.6 * u, 0, TAU); ctx.fill();
-    ctx.strokeStyle = "rgba(0,0,0,0.5)"; ctx.lineWidth = 1; ctx.stroke();
-    ctx.fillStyle = hair; ctx.beginPath(); ctx.arc(sx + fl * 0.8 * u, sy - 32.5 * u, 4.6 * u, Math.PI, TAU); ctx.fill();
-    if (u > 0.7) {
-      ctx.fillStyle = p.role === "GK" ? "#111" : k.num;
-      ctx.font = `900 ${Math.round(6.5 * u)}px Trebuchet MS, sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
-      ctx.fillText(String(p.num), sx, sy - 16.6 * u);
-    }
-    if (p.booked) { ctx.fillStyle = "#ffe14a"; ctx.fillRect(sx + 7 * u, sy - 38 * u, 3.5 * u, 5 * u); }
-  }
-  function drawRef(r) {
-    const u = S, sx = PX(r.x), sy = PY(r.y, 0);
-    if (sx < -60 || sx > W + 60) return;
-    ctx.fillStyle = "rgba(0,0,0,0.28)"; ctx.beginPath(); ctx.ellipse(sx, sy, 8 * u, 3.2 * u, 0, 0, TAU); ctx.fill();
-    ctx.strokeStyle = "#111"; ctx.lineWidth = 3.4 * u; ctx.lineCap = "round";
-    const sw = Math.sin(now * 8) * 2 * u;
-    ctx.beginPath(); ctx.moveTo(sx - 2.5 * u, sy - 11 * u); ctx.lineTo(sx - 2.5 * u + sw, sy - 1 * u);
-    ctx.moveTo(sx + 2.5 * u, sy - 11 * u); ctx.lineTo(sx + 2.5 * u - sw, sy - 1 * u); ctx.stroke();
-    ctx.fillStyle = "#151515"; rr(sx - 6.5 * u, sy - 26 * u, 13 * u, 15 * u, 3 * u); ctx.fill();
-    ctx.fillStyle = "#ffe14a"; ctx.fillRect(sx - 6.5 * u, sy - 22 * u, 13 * u, 1.6 * u);
-    ctx.fillStyle = "#e8b48c"; ctx.beginPath(); ctx.arc(sx, sy - 30 * u, 4.3 * u, 0, TAU); ctx.fill();
-    if (r.cardT > 0) {
-      ctx.strokeStyle = "#151515"; ctx.lineWidth = 3 * u; ctx.beginPath(); ctx.moveTo(sx + 6 * u, sy - 24 * u); ctx.lineTo(sx + 9 * u, sy - 38 * u); ctx.stroke();
-      ctx.fillStyle = r.cardColor === "red" ? "#ff2a3a" : "#ffe14a"; ctx.fillRect(sx + 6 * u, sy - 50 * u, 7 * u, 10 * u);
-      ctx.strokeStyle = "#000"; ctx.lineWidth = 1; ctx.strokeRect(sx + 6 * u, sy - 50 * u, 7 * u, 10 * u);
-    } else if (r.signalT > 0) {
-      ctx.strokeStyle = "#151515"; ctx.lineWidth = 3 * u; ctx.beginPath();
-      ctx.moveTo(sx - 6 * u, sy - 24 * u); ctx.lineTo(sx - 15 * u, sy - 27 * u); ctx.moveTo(sx + 6 * u, sy - 24 * u); ctx.lineTo(sx + 15 * u, sy - 27 * u); ctx.stroke();
-    }
-    if (r.whistleT > 0) { ctx.fillStyle = "#fff"; ctx.font = `900 ${Math.round(9 * u)}px sans-serif`; ctx.textAlign = "center"; ctx.fillText("♪", sx + 10 * u, sy - 34 * u); }
-  }
-  function drawBall(b) {
-    const u = S, gx = PX(b.x), gy = PY(b.y, 0), by = PY(b.y, b.z);
-    ctx.fillStyle = `rgba(0,0,0,${Math.max(0.08, 0.35 - b.z * 0.004)})`;
-    ctx.beginPath(); ctx.ellipse(gx, gy, 5 * u, 2.2 * u, 0, 0, TAU); ctx.fill();
-    const r = 4.6 * u;
-    ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(gx, by - r, r, 0, TAU); ctx.fill();
-    ctx.strokeStyle = "#111"; ctx.lineWidth = 1.2; ctx.stroke();
-    ctx.fillStyle = "#111";
-    for (let i = 0; i < 3; i++) {
-      const a = b.spin + i * TAU / 3;
-      ctx.beginPath(); ctx.arc(gx + Math.cos(a) * r * 0.5, by - r + Math.sin(a) * r * 0.5, r * 0.26, 0, TAU); ctx.fill();
-    }
-  }
-  function drawMarker(p) {
-    const u = S, sx = PX(p.x), sy = PY(p.y, 0);
-    ctx.strokeStyle = "#ffe14a"; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.ellipse(sx, sy, 13 * u, 5.4 * u, 0, 0, TAU); ctx.stroke();
-    const by = sy - 44 * u - Math.abs(Math.sin(now * 6)) * 4 * u;
-    ctx.fillStyle = "#ffe14a"; ctx.strokeStyle = "#000"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(sx - 7 * u, by - 9 * u); ctx.lineTo(sx + 7 * u, by - 9 * u); ctx.lineTo(sx, by); ctx.closePath(); ctx.fill(); ctx.stroke();
-    if (charging) {
-      const w = 34 * u, h = 5 * u, x = sx - w / 2, y = by - 18 * u;
-      ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(x - 1, y - 1, w + 2, h + 2);
-      const c = Math.min(1, shotCharge);
-      ctx.fillStyle = c > 0.92 ? "#ff3b3b" : c > 0.6 ? "#ffe14a" : "#38ff9c"; ctx.fillRect(x, y, w * c, h);
-      ctx.fillStyle = "#fff"; ctx.font = `900 ${Math.round(7 * u)}px sans-serif`; ctx.textAlign = "center"; ctx.fillText("POWER", sx, y - 2);
-    }
-    if (sx < 10 || sx > W - 10 || sy < 10 || sy > H - 10) {
-      const ex = clamp(sx, 24, W - 24), ey = clamp(sy, 24, H - 24);
-      ctx.fillStyle = "#ffe14a"; ctx.beginPath(); ctx.arc(ex, ey, 10, 0, TAU); ctx.fill();
-    }
-  }
-  function drawMinimap(list, bx, by) {
-    const touchUI = document.body.classList.contains("touch");
-    const mw = Math.min(touchUI ? 110 : 150, W * 0.2), mh = mw * PH / PW;
-    // On phones the bottom is thumb territory, so the map lives top-right.
-    const x0 = touchUI ? W - mw - 10 : W / 2 - mw / 2, y0 = touchUI ? 10 : H - mh - 8;
-    ctx.fillStyle = "rgba(10,40,20,0.55)"; ctx.fillRect(x0, y0, mw, mh);
-    ctx.strokeStyle = "rgba(255,255,255,0.6)"; ctx.lineWidth = 1; ctx.strokeRect(x0, y0, mw, mh);
-    ctx.beginPath(); ctx.moveTo(x0 + mw / 2, y0); ctx.lineTo(x0 + mw / 2, y0 + mh); ctx.stroke();
-    for (const p of list) {
-      if (p.sentOff) continue;
-      ctx.fillStyle = p.id === controlledId ? "#ffe14a" : kitOf(p.team).kit;
-      ctx.beginPath(); ctx.arc(x0 + (p.x + HW) / PW * mw, y0 + (p.y + HH) / PH * mh, p.id === controlledId ? 3.5 : 2.5, 0, TAU); ctx.fill();
-    }
-    ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(x0 + (bx + HW) / PW * mw, y0 + (by + HH) / PH * mh, 2, 0, TAU); ctx.fill();
-  }
+  // ---------- rendering (three.js scene lives in fc3d.js; HTML overlays here) ----------
   let rpPlayers = null;
-  const rpBall = { x: 0, y: 0, z: 0, spin: 0 }, rpRef = { x: 0, y: 0, cardT: 0, signalT: 0, whistleT: 0 };
+  const rpBall = { x: 0, y: 0, z: 0, spin: 0, vx: 0, vy: 0 }, rpRef = { x: 0, y: 0, cardT: 0, signalT: 0, whistleT: 0 };
+  const ovl = { goal: $("goal-text"), tag: $("name-tag"), pow: $("power"), powFill: $("power-fill"), arrow: $("ball-arrow") };
+  let goalShown = false;
+  const tagEls = [ovl.tag];
+  function tagEl(i) { if (!tagEls[i]) { const e = ovl.tag.cloneNode(); e.id = "name-tag" + i; ovl.tag.parentNode.appendChild(e); tagEls[i] = e; } return tagEls[i]; }
   function render(dt) {
     let list = players, b = ball, r = ref, flagsArr = null;
     if (state === "replay" && replay) {
-      const fr = replay.frames, fi = Math.min(fr.length - 1, Math.floor(replay.t * 30)), f = fr[fi];
+      const fr = replay.frames, fi = Math.min(fr.length - 1, Math.floor(replay.t * 30)), f = fr[fi], f0 = fr[Math.max(0, fi - 1)];
       if (!rpPlayers || rpPlayers.length !== players.length) rpPlayers = players.map(p => Object.assign({}, p));
       flagsArr = [];
       players.forEach((p, i) => {
         const q = rpPlayers[i], o = i * 5;
+        q.vx = (f[o] - f0[o]) * 30; q.vy = (f[o + 1] - f0[o + 1]) * 30;
         q.x = f[o]; q.y = f[o + 1]; q.face = f[o + 2]; q.anim = f[o + 3]; q.sentOff = !!(f[o + 4] & 4);
-        q.tackleT = 0; q.stun = 0; q.celebrate = false; q.booked = p.booked; q.vx = 60; q.vy = 0;
+        q.tackleT = 0; q.stun = 0; q.celebrate = false; q.booked = p.booked; q.diving = 0;
         flagsArr[i] = f[o + 4] & 3;
       });
       const o = players.length * 5;
+      rpBall.vx = (f[o] - f0[o]) * 30; rpBall.vy = (f[o + 1] - f0[o + 1]) * 30;
       rpBall.x = f[o]; rpBall.y = f[o + 1]; rpBall.z = f[o + 2]; rpRef.x = f[o + 3]; rpRef.y = f[o + 4]; rpBall.spin = f[o + 5];
       list = rpPlayers; b = rpBall; r = rpRef;
     }
-    if (state !== "title") updateCam(dt, b.x + (ball.owner && state === "play" ? ball.vx * 0.25 : 0), b.y, b.z);
-    ctx.fillStyle = "#1d6e35"; ctx.fillRect(0, 0, W, H);
-    if (pitchCv) ctx.drawImage(pitchCv, PX(-HW - MX), PY(-HH - MY, 0), (PW + 2 * MX) * S, (PH + 2 * MY) * TILT * S);
-    drawGoal(-1); drawGoal(1);
-    if (passPreview && state === "play") {
-      const sx = PX(passPreview.x), sy = PY(passPreview.y, 0);
-      ctx.setLineDash([5, 4]); ctx.strokeStyle = "rgba(255,255,255,0.95)"; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.ellipse(sx, sy, 12 * S, 5 * S, 0, 0, TAU); ctx.stroke(); ctx.setLineDash([]);
-    }
-    const ents = [];
-    list.forEach((p, i) => { if (!p.sentOff) ents.push({ y: p.y, k: 0, p, f: flagsArr ? flagsArr[i] : undefined }); });
-    ents.push({ y: r.y, k: 1, p: r }); ents.push({ y: b.y + 0.5, k: 2, p: b });
-    ents.sort((a, c) => a.y - c.y);
-    for (const e of ents) { if (e.k === 0) drawPlayer(e.p, e.f); else if (e.k === 1) drawRef(e.p); else drawBall(e.p); }
-    for (const q of particles) {
-      ctx.globalAlpha = clamp(q.life, 0, 1); ctx.fillStyle = q.c;
-      ctx.fillRect(PX(q.x) - q.r, PY(q.y, q.z) - q.r, q.r * 2, q.r * 1.4);
-    }
-    ctx.globalAlpha = 1;
+    const camMode = state === "title" ? "title" : state === "replay" ? "replay" : state === "goal" ? "goal" : "play";
+    let focus = b;
+    if (state === "goal" && goalInfo && goalInfo.scorer && goalT < GOAL_TIME - 0.9) focus = goalInfo.scorer;
+    else if (state === "play" && ball.owner) focus = { x: b.x + ball.vx * 0.3, y: b.y, z: 0 };
+    crowdJump = state === "goal" ? 1 : Math.max(0, crowdJump - dt * 0.7);
     const c = controlled();
-    if (c && state !== "title" && state !== "replay" && state !== "goal") drawMarker(c);
-    if (NET.names && state !== "title") {
-      const oid = NET.client ? NET.hostCtrl : (otherCtx ? otherCtx.controlledId : -1), o = players.find(q => q.id === oid && !q.sentOff);
-      if (o) {
-        const nm = NET.names[NET.client ? 0 : 1], sx = PX(o.x), sy = PY(o.y, 0) - 46 * S;
-        ctx.font = `900 ${Math.max(11, Math.round(9 * S))}px Trebuchet MS, sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-        const w = ctx.measureText(nm).width + 12;
-        ctx.fillStyle = "rgba(0,0,0,0.6)"; rr(sx - w / 2, sy - 9, w, 18, 6); ctx.fill();
-        ctx.fillStyle = NET.colors ? NET.colors[NET.client ? 0 : 1] : "#fff"; ctx.fillText(nm, sx, sy);
+    // the other humans in an online match (ring + name tag over their players)
+    const oh = [];
+    if (NET.on && state !== "title") {
+      const src = NET.client ? NET.humans : [...remotes.map(q => ({ pid: q.pid, id: q.controlledId }))];
+      for (const h of src) { if (NET.client && h.pid === NET.room.pid) continue; const q = players[h.id]; const pe = NET.people.find(x => x.pid === h.pid); if (q && !q.sentOff && pe) oh.push({ p: q, name: pe.name, color: pe.color }); }
+    }
+    const live = state !== "title" && state !== "replay" && state !== "goal" && state !== "full" && state !== "half";
+    if (has3D) FC3D.render({ players: list, flags: flagsArr, ball: b, ref: r, ctrl: c, others: oh,
+      showMarker: live, passPreview: state === "play" ? passPreview : null, particles, now, ut: UT, camMode, focus, crowdJump }, dt);
+    // GOAL! text
+    const showGoal = state === "goal" && goalInfo && goalT > 0.5;
+    if (showGoal !== goalShown) {
+      goalShown = showGoal; ovl.goal.classList.toggle("show", showGoal);
+      if (showGoal) {
+        const sc = goalInfo.scorer;
+        ovl.goal.innerHTML = `<b>${goalInfo.og ? "OWN GOAL!" : "GOAL!"}</b>` + (sc && !goalInfo.og ? `<span>#${sc.num} ${nEsc(sc.name)} · ${nEsc(kitOf(goalInfo.team).name)}</span>` : "");
       }
     }
+    // partner name tag (online) and the shot power bar, both pinned above the player's head
+    for (let i = 0; i < 2; i++) {
+      const el = tagEl(i), h = oh[i];
+      if (has3D && h && live) {
+        const hp = FC3D.headPos(h.p);
+        if (el.textContent !== h.name) el.textContent = h.name; el.style.color = h.color || "#fff";
+        el.style.transform = `translate(${Math.round(hp.x)}px,${Math.round(hp.y - 22)}px) translate(-50%,-100%)`; el.classList.remove("hidden");
+      } else el.classList.add("hidden");
+    }
+    if (has3D && c && charging && live) {
+      const hp = FC3D.headPos(c), k = Math.min(1, shotCharge);
+      ovl.pow.style.transform = `translate(${Math.round(hp.x)}px,${Math.round(hp.y - 30)}px) translate(-50%,-100%)`; ovl.pow.classList.remove("hidden");
+      ovl.powFill.style.width = Math.round(k * 100) + "%"; ovl.powFill.style.background = k > 0.92 ? "#ff3b3b" : k > 0.6 ? "#ffe14a" : "#38ff9c";
+    } else ovl.pow.classList.add("hidden");
     if (state !== "title") drawMinimap(list, b.x, b.y);
-    if (state === "goal" && goalInfo) {
-      const t = 2.6 - goalT, s = Math.min(1, t * 4) * (1 + Math.sin(t * 10) * 0.04);
-      const txt = goalInfo.og ? "OWN GOAL!" : "GOAL!";
-      ctx.save(); ctx.translate(W / 2, H * 0.36); ctx.scale(s, s);
-      ctx.font = `900 ${Math.round(Math.min(W, H) * 0.2)}px Trebuchet MS, Arial Black, sans-serif`;
-      ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.lineWidth = 10; ctx.strokeStyle = "#000";
-      ctx.strokeText(txt, 0, 0); ctx.fillStyle = "#ffe14a"; ctx.fillText(txt, 0, 0);
-      if (goalInfo.scorer && !goalInfo.og) {
-        ctx.font = `900 ${Math.round(Math.min(W, H) * 0.06)}px Trebuchet MS, sans-serif`; ctx.lineWidth = 5;
-        const sub = `#${goalInfo.scorer.num} ${goalInfo.scorer.name} · ${kitOf(goalInfo.team).name}`;
-        ctx.strokeText(sub, 0, Math.min(W, H) * 0.14); ctx.fillStyle = "#fff"; ctx.fillText(sub, 0, Math.min(W, H) * 0.14);
-      }
-      ctx.restore();
+    $("flash").style.opacity = goalFlash > 0 ? (goalFlash * 0.3).toFixed(2) : "0";
+    document.body.classList.toggle("replaying", state === "replay");
+  }
+  function drawMinimap(list, bx, by) {
+    const w = mmCv.width / dpr, h = mmCv.height / dpr;
+    const B = has3D ? FC3D.basis : { rx: 1, rz: 0, fx: 0, fz: -1 };
+    const portrait = h > w;
+    const sx = (portrait ? w / PH : w / PW), sy = (portrait ? h / PW : h / PH);
+    const P = (x, y) => [w / 2 + (x * B.rx + y * B.rz) * sx, h / 2 - (x * B.fx + y * B.fz) * sy];
+    mm.clearRect(0, 0, w, h);
+    mm.fillStyle = "rgba(10,40,20,0.6)"; mm.fillRect(0, 0, w, h);
+    mm.strokeStyle = "rgba(255,255,255,0.65)"; mm.lineWidth = 1; mm.strokeRect(0.5, 0.5, w - 1, h - 1);
+    const m0 = P(0, -HH), m1 = P(0, HH); mm.beginPath(); mm.moveTo(m0[0], m0[1]); mm.lineTo(m1[0], m1[1]); mm.stroke();
+    for (const p of list) {
+      if (p.sentOff) continue;
+      const q = P(p.x, p.y), me = p.id === controlledId;
+      mm.fillStyle = me ? "#ffe14a" : kitOf(p.team).kit; mm.beginPath(); mm.arc(q[0], q[1], me ? 3.5 : 2.4, 0, TAU); mm.fill();
+      if (!me && kitOf(p.team).kit === "#f4f4f4") { mm.strokeStyle = "#333"; mm.stroke(); }
     }
-    if (goalFlash > 0) { ctx.fillStyle = `rgba(255,255,255,${goalFlash * 0.25})`; ctx.fillRect(0, 0, W, H); }
-    if (state === "replay") { ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(0, 0, W, H * 0.07); ctx.fillRect(0, H * 0.93, W, H * 0.07); }
+    const q = P(bx, by); mm.fillStyle = "#fff"; mm.strokeStyle = "#000"; mm.beginPath(); mm.arc(q[0], q[1], 2.2, 0, TAU); mm.fill(); mm.stroke();
   }
 
   // ---------- HUD ----------
@@ -1714,6 +1620,15 @@
     const el = $("call-banner");
     el.textContent = text; el.classList.add("show"); bannerT = t || 1.2;
     netEv({ t: "bn", x: text, d: t || 1.2 });
+  }
+  const titleCase = x => String(x || "").toLowerCase().replace(/(^|[\s.'-])\S/g, m => m.toUpperCase());
+  function comment(cat, p, prio, team) {
+    if (autoplay || !Comm || NET.client) return;
+    const tm = team !== undefined ? team : p ? p.team : HOME;
+    const nm = t => titleCase(NET.names ? NET.names[t] : kitOf(t).name);
+    const v = { p: p ? titleCase(p.name) : "", team: nm(tm), stad: titleCase((STADS[cfg.stadium] || STADS[0]).name), score: `${nm(0)} ${score[0]}, ${nm(1)} ${score[1]}` };
+    const txt = Comm.say(cat, v, prio);
+    if (txt) netEv({ t: "cm", x: txt, pr: prio });
   }
   function applyTeamColorsToHUD() {
     const h = kitOf(HOME), a = kitOf(AWAY);
@@ -1737,9 +1652,9 @@
       hudCache.mode = mode;
       document.body.classList.toggle("atk", mode === "atk");
       $("lbl-pass").textContent = mode === "atk" ? "PASS" : "SWITCH";
-      $("lbl-shoot").textContent = mode === "atk" ? "SHOOT" : "PRESS";
-      $("sub-shoot").textContent = mode === "atk" ? "hold = power" : "hold = chase";
-      $("lbl-tackle").textContent = mode === "atk" ? "SPRINT" : "TACKLE";
+      $("lbl-shoot").textContent = mode === "atk" ? "SHOOT" : "TACKLE";
+      $("sub-shoot").textContent = mode === "atk" ? "hold = power" : "";
+      $("sub-sprint").textContent = mode === "atk" ? "" : "hold = chase";
     }
   }
 
@@ -1751,9 +1666,9 @@
   }
   function hideOverlay() { $("overlay").classList.remove("show"); }
   function showTitle() {
-    if (NET.solo || NET.gone) { NET.solo = false; NET.on = false; NET.names = null; NET.client = false; NET.host = false; UT = HOME; otherCtx = null; document.body.classList.remove("online"); }
+    if (NET.solo || NET.gone) { NET.solo = false; NET.on = false; NET.names = null; NET.client = false; NET.host = false; NET.coop = false; UT = HOME; remotes = []; NET.R = null; document.body.classList.remove("online"); }
     $("retry-btn").classList.remove("hidden"); $("retry-btn").textContent = "REMATCH"; $("full-menu-btn").textContent = "MENU"; $("second-half-btn").classList.remove("hidden");
-    state = "title";
+    state = "title"; if (Comm) Comm.clear();
     $("hud").classList.add("hidden"); $("touch-ui").classList.add("hidden"); $("countdown").classList.remove("show");
     $("sp-hint").classList.add("hidden"); $("replay-tag").classList.add("hidden"); $("card-toast").classList.add("hidden");
     buildMenus();
@@ -1775,6 +1690,26 @@
       });
     };
     sw("pick-team", "team", "opp"); sw("pick-opp", "opp", "team");
+    // stadiums
+    const st = $("pick-stad"); st.innerHTML = "";
+    STADS.forEach((S, i) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "stad" + (cfg.stadium === i ? " on" : ""); b.dataset.i = i;
+      b.style.setProperty("--a", S.sky ? S.sky[0] : "#246"); b.style.setProperty("--b", S.g1 || "#2f9e4c");
+      b.innerHTML = `<b>${S.name}</b><small>${S.desc || ""}</small>`;
+      b.addEventListener("click", () => { cfg.stadium = i; saveCfg(); buildMenus(); initMatch(); });
+      st.appendChild(b);
+    });
+    // classic kit team or Dream Team
+    const md = $("pick-mode"); md.innerHTML = "";
+    ["CLASSIC", "DREAM TEAM"].forEach((l, i) => {
+      const b = document.createElement("button"); b.type = "button"; b.className = "seg" + (cfg.mode === i ? " on" : ""); b.textContent = l;
+      b.addEventListener("click", () => { cfg.mode = i; saveCfg(); buildMenus(); initMatch(); });
+      md.appendChild(b);
+    });
+    $("pick-team").classList.toggle("hidden", cfg.mode === 1);
+    $("dream-sum").classList.toggle("hidden", cfg.mode !== 1);
+    if (cfg.mode === 1) $("dream-sum").innerHTML = dreamSummary(myDream());
     const seg = (id, key, labels) => {
       const el = $(id); el.innerHTML = "";
       labels.forEach((l, i) => {
@@ -1791,6 +1726,22 @@
     $("ref-note").textContent = refNote[cfg.ref];
     $("title-record").textContent = record.w + record.d + record.l ? `Your record: ${record.w}W ${record.d}D ${record.l}L` : "";
   }
+  function dreamSummary(d) {
+    if (!d) return "";
+    const ps = d.ids.map(id => Dream.BY_ID[id]);
+    return `<div class="ds-top"><span class="kit" style="background:linear-gradient(135deg,${d.kit} 58%,${d.kit2} 58%)"></span><b>${nEsc(d.name)}</b><span>${d.form} · ${Dream.totalStars(d.ids)}★</span>
+      <button type="button" class="seg dream-edit">EDIT</button></div><div class="ds-names">${ps.map(p => nEsc(p.name)).join(" · ")}</div>`;
+  }
+  let dreamBack = null;
+  function openDream(back) {
+    dreamBack = back || null;
+    showOverlay("dream-card");
+    Dream.openBuilder($("dream-card"), res => {
+      if (res) { cfg.mode = 1; saveCfg(); if (!NET.on) initMatch(); }
+      if (dreamBack) dreamBack(); else { buildMenus(); showOverlay("title-card"); }
+    });
+  }
+  document.addEventListener("click", e => { const t = e.target.closest && e.target.closest(".dream-edit"); if (t) openDream(NET.on && NET.phase === "lobby" ? netLobby : null); });
   function startMatch() {
     Sfx.init();
     if (NET.solo) { NET.solo = false; NET.names = null; UT = HOME; }
@@ -1806,7 +1757,7 @@
       $("countdown").classList.add("show");
     }
     state = "countdown"; cdT = autoplay ? 0 : 2.1;
-    cam.x = 0; cam.y = 0;
+    if (has3D) FC3D.resetCam();
   }
   let helpThenPlay = false;
   function showHelp(thenPlay) { helpThenPlay = !!thenPlay; showOverlay("help-card"); }
@@ -1824,6 +1775,9 @@
     if (helpThenPlay) startMatch(); else showOverlay("title-card");
   });
   $("pause-btn").addEventListener("click", togglePause);
+  function syncMute() { $("mute-btn").textContent = Comm && Comm.voice ? "🔊" : "🔇"; }
+  $("mute-btn").addEventListener("click", () => { if (Comm) { Comm.setVoice(!Comm.voice); syncMute(); } });
+  syncMute();
   $("resume-btn").addEventListener("click", togglePause);
   $("pause-help-btn").addEventListener("click", () => { $("pause-help").classList.toggle("hidden"); });
   $("pause-quit-btn").addEventListener("click", showTitle);
@@ -1833,18 +1787,19 @@
   $("online-btn").addEventListener("click", () => netSetupCard());
 
   // ---------- main loop (fixed 60 Hz simulation) ----------
-  let acc = 0, last = 0;
+  let acc = 0, last = 0, timeScale = 1, pilot = false;
   function frame(ts) {
     let dt = last ? (ts - last) / 1000 : DT; last = ts;
     if (dt > 0.1) dt = 0.1;
-    acc += dt;
+    acc += dt * timeScale;
     let n = 0;
-    while (acc >= DT && n < 6) { update(DT); acc -= DT; n++; }
-    if (n >= 6) acc = 0;
+    while (acc >= DT && n < 6 * timeScale) { update(DT); acc -= DT; n++; }
+    if (n >= 6 * timeScale) acc = 0;
     const c = controlled();
     if (state === "play" && c && ball.owner === c && !autoplay) { const m = readMove(); passPreview = choosePassTarget(c, m.x, m.y, m.m > 0.25); }
     else passPreview = null;
     if (state !== "title" && state !== "pause") updateHUD();
+    if (Comm) Comm.tick();
     render(dt);
     requestAnimationFrame(frame);
   }
@@ -1887,22 +1842,46 @@
     if (document.body.classList.contains("touch")) $("touch-ui").classList.remove("hidden");
   }
   function chips() {
-    const l = NET.room.players();
-    let h = l.map(p => `<span class="on-chip" style="--c:${GN.cleanColor(p.color)}">${nEsc(p.name)}${p.host ? " · HOME" : " · AWAY"}${p.pid === NET.room.pid ? " (you)" : ""}</span>`).join("");
+    const l = NET.room.players(), coop = NET.host ? !!cfg.coop : !!NET.lobCoop;
+    let h = l.map(p => `<span class="on-chip" style="--c:${GN.cleanColor(p.color)}">${nEsc(p.name)}${coop ? " · TEAM" : p.host ? " · HOME" : " · AWAY"}${p.pid === NET.room.pid ? " (you)" : ""}</span>`).join("");
     if (l.length < 2) h += '<span class="on-chip empty">waiting for a friend…</span>';
+    else if (coop && l.length < 3) h += '<span class="on-chip empty">room for 1 more</span>';
     return `<div class="on-top"><span class="on-code">${nEsc(NET.room.code)}</span><div class="on-chips">${h}</div></div>`;
   }
   function netLobby() {
     NET.phase = "lobby";
     const n = NET.room.players().length, host = NET.room.isHost;
     const hostP = NET.room.players().find(p => p.host);
+    if (host && n >= 3 && !cfg.coop) cfg.coop = true; // 3 players: only co-op works
+    const coop = host ? !!cfg.coop : !!NET.lobCoop;
+    const canStart = host && (coop ? n >= 2 && n <= 3 : n === 2);
     const st = n < 2 ? `Tell your friend the code <b>${nEsc(NET.room.code)}</b> (Grok FC → PLAY ONLINE → JOIN).`
-      : host ? "Both here! Tap KICK OFF when you're ready." : `Waiting for ${nEsc(hostP ? hostP.name : "the host")} to kick off…`;
-    onCard(`<p class="kicker">GROK FC ONLINE · 1 v 1</p><h2>MATCH ROOM</h2>${chips()}<p class="note" id="on-status">${st}</p>
-      <div class="btn-row">${host ? `<button id="on-start" class="btn primary" type="button"${n < 2 ? " disabled" : ""}>KICK OFF</button>` : ""}
+      : host ? (canStart ? (coop ? "Everyone's on your team vs the AI. Tap KICK OFF!" : "Both here! Tap KICK OFF when you're ready.") : "1 v 1 needs exactly 2 players — pick CO-OP for 3.")
+      : `Waiting for ${nEsc(hostP ? hostP.name : "the host")} to kick off…`;
+    const stadSel = host ? `<div class="segs on-stads">${STADS.map((S, i) => `<button type="button" class="seg${cfg.stadium === i ? " on" : ""}" data-st="${i}">${S.name}</button>`).join("")}</div>`
+      : `<p class="note">Stadium: <b id="on-stad-name">${nEsc((STADS[NET.lobSt | 0] || STADS[0]).name)}</b> (${nEsc(hostP ? hostP.name : "host")} picks)</p>`;
+    const modeSel = host ? `<div class="segs" id="on-coop"><button type="button" class="seg${!coop ? " on" : ""}" data-c="0">1 v 1</button><button type="button" class="seg${coop ? " on" : ""}" data-c="1">CO-OP vs AI</button></div>`
+      : `<p class="note" id="on-mode-name"><b>${coop ? "CO-OP vs AI" : "1 v 1"}</b></p>`;
+    const diffSel = host && coop ? `<label>AI LEVEL</label><div class="segs">${DIFFS.map((d, i) => `<button type="button" class="seg${cfg.diff === i ? " on" : ""}" data-d="${i}">${d.name}</button>`).join("")}</div>` : "";
+    const teamSel = coop && !host ? `<p class="note">You play on ${nEsc(hostP ? hostP.name : "the host")}'s team${"" }.</p>`
+      : `<div class="segs" id="on-mode"><button type="button" class="seg${cfg.mode === 0 ? " on" : ""}" data-m="0">CLASSIC</button><button type="button" class="seg${cfg.mode === 1 ? " on" : ""}" data-m="1">MY DREAM TEAM</button></div>`;
+    onCard(`<p class="kicker">GROK FC ONLINE · ${coop ? "CO-OP" : "1 v 1"}</p><h2>MATCH ROOM</h2>${chips()}<p class="note" id="on-status">${st}</p>
+      <div class="on-opts"><label>MODE</label>${modeSel}${diffSel}<label>STADIUM</label>${stadSel}
+      <label>${coop ? "TEAM" : "YOUR TEAM"}</label>${teamSel}
+      ${cfg.mode === 1 && (host || !coop) ? `<div class="dream-sum">${dreamSummary(myDream())}</div>` : ""}</div>
+      <div class="btn-row">${host ? `<button id="on-start" class="btn primary" type="button"${canStart ? "" : " disabled"}>KICK OFF</button>` : ""}
       <button id="on-leave" class="btn ghost" type="button">LEAVE</button></div>`);
     onBtn("on-start", netStart);
     onBtn("on-leave", netLeave);
+    const q = sel => document.querySelectorAll("#online-card " + sel);
+    q("[data-st]").forEach(b => b.addEventListener("click", () => { cfg.stadium = +b.dataset.st; saveCfg(); netLobby(); }));
+    q("[data-m]").forEach(b => b.addEventListener("click", () => { cfg.mode = +b.dataset.m; saveCfg(); netLobby(); }));
+    q("[data-c]").forEach(b => b.addEventListener("click", () => { cfg.coop = b.dataset.c === "1"; saveCfg(); netLobby(); }));
+    q("[data-d]").forEach(b => b.addEventListener("click", () => { cfg.diff = +b.dataset.d; saveCfg(); netLobby(); }));
+    try {
+      if (host) NET.room.broadcast({ t: "lob", st: cfg.stadium, coop: !!cfg.coop });
+      else NET.room.send({ t: "dt", dt: myDream() });
+    } catch (e) { /* ignore */ }
   }
   function netWait(msg) { onCard(`<p class="kicker">GROK FC ONLINE</p><h2>CONNECTING</h2><div class="on-spin"></div><p class="note">${nEsc(msg)}</p><button id="on-leave" class="btn ghost" type="button">CANCEL</button>`); onBtn("on-leave", netLeave); }
   function netLeave() { try { NET.room.leave(); } catch (e) { /* ignore */ } location.href = GN.soloUrl(); }
@@ -1913,31 +1892,54 @@
   }
   function netMenu() { if (NET.host) NET.room.broadcast({ t: "lobby" }, { self: true }); else netLeave(); }
   function netStart() {
-    const l = NET.room.players();
-    if (!NET.host || l.length < 2) return;
-    const h = l.find(p => p.host), o = l.find(p => !p.host);
+    const l = NET.room.players(), coop = !!cfg.coop;
+    if (!NET.host || l.length < 2 || (!coop && l.length !== 2) || l.length > 3) return;
+    const h = l.find(p => p.host), os = l.filter(p => !p.host), o = os[0];
     NET.rid = (NET.rid || 0) + 1;
-    NET.room.broadcast({ t: "go", rid: NET.rid, names: [h.name, o.name], colors: [GN.cleanColor(h.color), GN.cleanColor(o.color)], opid: o.pid,
-      team: cfg.team, opp: cfg.opp, len: cfg.len, ref: cfg.ref }, { self: true });
+    const people = [h, ...os].map((p, i) => ({ pid: p.pid, name: GN.cleanName(p.name).toUpperCase(), color: GN.cleanColor(p.color), team: coop || i === 0 ? HOME : AWAY, slot: coop ? [6, 4, 3][i] : 6 }));
+    const short = n => GN.cleanName(n).toUpperCase().slice(0, 8);
+    const names = coop ? [[h, ...os].map(p => short(p.name)).join(" & "), TEAMS[cfg.opp].name + " AI"] : [h.name, o.name];
+    NET.room.broadcast({ t: "go", rid: NET.rid, names, colors: [GN.cleanColor(h.color), GN.cleanColor(o.color)], opid: o.pid, coop, people, diff: cfg.diff,
+      team: cfg.team, opp: cfg.opp, len: cfg.len, ref: cfg.ref, st: cfg.stadium, dts: [myDream(), coop ? null : ((NET.peerDTs || {})[o.pid] || null)] }, { self: true });
   }
   function startOnline(d) {
-    NET.names = d.names.map(n => GN.cleanName(n).toUpperCase()); NET.colors = d.colors; NET.rid = d.rid; NET.opid = d.opid;
+    NET.coop = !!d.coop; NET.names = d.names.map(n => String(n).replace(/[<>&"]/g, "").toUpperCase().slice(0, 26)); NET.colors = d.colors; NET.rid = d.rid; NET.opid = d.opid;
+    NET.people = (Array.isArray(d.people) ? d.people : []).slice(0, 3).map(p => ({ pid: String(p.pid), name: GN.cleanName(p.name).toUpperCase(), color: GN.cleanColor(p.color), team: p.team === AWAY ? AWAY : HOME, slot: clamp(p.slot | 0, 1, 6) }));
+    if (!NET.people.length) NET.people = [{ pid: "h", name: NET.names[0], color: d.colors[0], team: HOME, slot: 6 }, { pid: d.opid, name: NET.names[1], color: d.colors[1], team: AWAY, slot: 6 }];
+    if (NET.coop) cfg.diff = clamp(d.diff | 0, 0, 2);
+    const meP = NET.people.find(p => p.pid === NET.room.pid);
+    UT = NET.host ? HOME : (meP ? meP.team : AWAY);
     cfg.team = d.team | 0; cfg.opp = d.opp | 0; cfg.len = d.len | 0; cfg.ref = d.ref | 0;
+    if (cfg.team === cfg.opp || cfg.team < 0 || cfg.team >= TEAMS.length || cfg.opp < 0 || cfg.opp >= TEAMS.length) { cfg.team = 0; cfg.opp = 1; }
+    cfg.stadium = clamp(d.st | 0, 0, STADS.length - 1);
+    NET.dts = Array.isArray(d.dts) ? [Dream.sanitize(d.dts[0]), Dream.sanitize(d.dts[1])] : [null, null];
     NET.phase = "match"; NET.gone = false; NET.fin = null; NET.finShown = false; NET.snaps = []; NET.lastSt = "";
     $("second-half-btn").classList.add("hidden");
     if (NET.host) {
-      NET.R = otherCtx = { UT: AWAY, btn: { pass: mkBtn(), shoot: mkBtn(), tackle: mkBtn() }, switchReq: false, controlledId: AWAY * 7 + 6,
-        charging: false, shotCharge: 0, autoSwitchT: 0, move: { x: 0, y: 0, m: 0, sprint: false }, last: null };
+      remotes = NET.people.filter(p => p.pid !== NET.room.pid).map(p => ({ pid: p.pid, name: p.name, UT: p.team, btn: { pass: mkBtn(), shoot: mkBtn(), sprint: mkBtn() }, switchReq: false,
+        controlledId: p.team * 7 + p.slot, charging: false, shotCharge: 0, autoSwitchT: 0, move: { x: 0, y: 0, m: 0, sprint: false }, last: null }));
+      NET.R = remotes[0] || null;
       NET.starting = true; startMatch();
+      for (const r of remotes) r.controlledId = r.UT * 7 + (NET.people.find(p => p.pid === r.pid) || { slot: 6 }).slot;
     } else {
       initMatch(); hideOverlay(); hudOn();
-      controlledId = AWAY * 7 + 6; state = "countdown"; cdT = 2.1;
-      $("countdown").classList.add("show"); cam.x = 0; cam.y = 0;
+      controlledId = UT * 7 + (meP ? meP.slot : 6); state = "countdown"; cdT = 2.1;
+      $("countdown").classList.add("show"); if (has3D) FC3D.resetCam();
     }
+  }
+  // host: someone left mid-match. Their player goes back to the AI.
+  function remoteLeft() {
+    const live = NET.room.players().map(p => p.pid);
+    const gone = remotes.filter(r => !live.includes(r.pid));
+    if (!gone.length) return;
+    if (!NET.coop) { partnerLeft(); return; }
+    remotes = remotes.filter(r => live.includes(r.pid)); NET.R = remotes[0] || null;
+    for (const r of gone) banner(`${r.name} LEFT · AI TAKES OVER`, 3);
+    if (!remotes.length) { NET.gone = true; if (state === "full") netFullCard(); }
   }
   function partnerLeft() {
     if (NET.gone) return;
-    NET.gone = true; otherCtx = null; NET.R = null;
+    NET.gone = true; remotes = []; NET.R = null;
     const nm = NET.names ? NET.names[1] : "Your friend";
     if (NET.names) NET.names[1] = kitOf(AWAY).name + " AI";
     applyTeamColorsToHUD();
@@ -1956,10 +1958,11 @@
   }
   // friend keeps the current match going locally (still the away team) after the host left
   function takeover() {
-    NET.client = false; NET.on = false; NET.solo = true; otherCtx = null;
+    NET.client = false; NET.on = false; NET.solo = true; remotes = []; NET.humans = [];
     try { NET.room.leave(); } catch (e) { /* ignore */ }
     document.body.classList.remove("online");
-    if (NET.names) NET.names[0] = kitOf(HOME).name + " AI";
+    if (NET.names && !NET.coop) NET.names[0] = kitOf(HOME).name + " AI";
+    if (NET.coop) NET.coop = false;
     applyTeamColorsToHUD();
     stats = freshStats(); sp = null; pendingSP = null; advantage = null; goalInfo = null; charging = false; shotCharge = 0;
     for (const p of players) { p.tackleT = 0; p.stun = 0; p.celebrate = false; p.vx = p.vy = 0; }
@@ -1983,18 +1986,19 @@
       P.push(r1(p.x), r1(p.y), Math.round(p.vx), Math.round(p.vy), r2(p.face), f);
     }
     const R = NET.R;
-    return { t: "s", rid: NET.rid, st: state === "pause" ? pausedFrom : state, sc: score, ck: r1(clock), h: half, hl: halfLen, cd: r2(cdT), P,
+    const hu = [[NET.room.pid, controlledId, charging ? r2(shotCharge) : -1], ...remotes.map(q => [q.pid, q.controlledId, q.charging ? r2(q.shotCharge) : -1])];
+    return { t: "s", rid: NET.rid, st: state === "pause" ? pausedFrom : state, sc: score, ck: r1(clock), h: half, hl: halfLen, cd: r2(cdT), P, hu,
       b: [r1(ball.x), r1(ball.y), r1(ball.z), ball.owner ? ball.owner.id : -1, r1(ball.spin)], rf: [r1(ref.x), r1(ref.y), ref.cardT > 0 ? (ref.cardColor === "red" ? 2 : 1) : 0, ref.whistleT > 0 ? 1 : 0],
       ci: R ? R.controlledId : -1, hc: controlledId, ch: R && R.charging ? r2(R.shotCharge) : -1, sp: sp ? [sp.team, sp.type] : null,
       gi: (state === "goal") && goalInfo ? [goalInfo.team, goalInfo.og ? 1 : 0, goalInfo.scorer ? goalInfo.scorer.id : -1] : null,
       fin: state === "full" ? NET.fin : null };
   }
-  function hostInput(d) {
-    const R = NET.R; if (!R || d.rid !== NET.rid) return;
+  function hostInput(d, from) {
+    const R = remotes.find(q => q.pid === from) || (remotes.length === 1 && !from ? remotes[0] : null); if (!R || d.rid !== NET.rid) return;
     R.move.x = clamp(+d.x || 0, -1, 1); R.move.y = clamp(+d.y || 0, -1, 1); R.move.m = clamp(+d.m || 0, 0, 1); R.move.sprint = !!d.s;
     const pc = Array.isArray(d.pc) ? d.pc : [0, 0, 0], dn = Array.isArray(d.dn) ? d.dn : [];
     if (!R.last) R.last = { pc: pc.map(v => v | 0), sw: d.sw | 0 };
-    ["pass", "shoot", "tackle"].forEach((k, i) => {
+    ["pass", "shoot", "sprint"].forEach((k, i) => {
       const b = R.btn[k], c = pc[i] | 0, down = !!dn[i];
       if (c > R.last.pc[i]) b.pressed = true;
       if (b.down && !down) b.released = true;
@@ -2006,15 +2010,15 @@
   // ----- friend: input out, snapshots in -----
   function sendInput() {
     const m = readMove(), b = localBtn;
-    NET.room.send({ t: "in", rid: NET.rid, x: r2(m.x), y: r2(m.y), m: r2(m.m), s: !!(keys.ShiftLeft || keys.ShiftRight),
-      pc: [b.pass.cnt | 0, b.shoot.cnt | 0, b.tackle.cnt | 0], dn: [b.pass.down, b.shoot.down, b.tackle.down], sw: swCnt });
+    NET.room.send({ t: "in", rid: NET.rid, x: r2(m.x), y: r2(m.y), m: r2(m.m), s: !!b.sprint.down,
+      pc: [b.pass.cnt | 0, b.shoot.cnt | 0, b.sprint.cnt | 0], dn: [b.pass.down, b.shoot.down, b.sprint.down], sw: swCnt });
   }
   function clientState(prev, cur) {
     if (prev === "countdown") $("countdown").classList.remove("show");
     if (prev === "half") hideOverlay();
     if (cur === "countdown") { hideOverlay(); hudOn(); $("countdown").classList.add("show"); }
     if (cur === "goal") {
-      goalT = 2.6; goalFlash = 1; Sfx.goal();
+      goalT = GOAL_TIME; goalFlash = 1; Sfx.goal();
       const k = kitOf(goalInfo ? goalInfo.team : HOME);
       for (let i = 0; i < 70; i++) particles.push({ x: ball.x, y: ball.y, z: rand(5, 30), vx: rand(-260, 260), vy: rand(-260, 260), vz: rand(150, 420), life: rand(1, 2), c: [k.kit, k.kit2, "#fff", "#ffe14a"][i % 4], r: rand(2, 4) });
     }
@@ -2029,8 +2033,12 @@
     const Q = NET.snaps; if (!Q.length) return;
     const L = Q[Q.length - 1];
     score = L.sc.slice(); clock = L.ck; half = L.h; halfLen = L.hl;
-    if (L.ci >= 0) controlledId = L.ci;
-    NET.hostCtrl = L.hc; charging = L.ch >= 0; shotCharge = Math.max(0, L.ch);
+    if (Array.isArray(L.hu)) {
+      NET.humans = L.hu.map(h => ({ pid: String(h[0]), id: h[1] | 0, ch: +h[2] }));
+      const me = NET.humans.find(h => h.pid === NET.room.pid);
+      if (me) { controlledId = me.id; charging = me.ch >= 0; shotCharge = Math.max(0, me.ch); }
+    } else if (L.ci >= 0) { controlledId = L.ci; charging = L.ch >= 0; shotCharge = Math.max(0, L.ch); }
+    NET.hostCtrl = L.hc;
     sp = L.sp ? { team: L.sp[0], type: L.sp[1] } : null;
     if (L.gi) goalInfo = { team: L.gi[0], og: !!L.gi[1], scorer: players[L.gi[2]] || null, side: Math.sign(ball.x) || 1 };
     if (L.st && L.st !== state) { const prev = state; state = L.st; clientState(prev, state); }
@@ -2077,11 +2085,17 @@
     if (NET.host && !NET.gone) NET.room.broadcast(snapshot());
     else if (NET.client) sendInput();
   }
-  function onNetMsg(d) {
+  function onNetMsg(d, from) {
     if (!d || typeof d !== "object") return;
     if (d.t === "go") { startOnline(d); return; }
     if (d.t === "lobby") { goLobby(); return; }
-    if (NET.host) { if (d.t === "in") hostInput(d); return; }
+    if (NET.host) { if (d.t === "in") hostInput(d, from); else if (d.t === "dt" && from) { NET.peerDTs = NET.peerDTs || {}; NET.peerDTs[from] = Dream.sanitize(d.dt); } return; }
+    if (d.t === "lob") {
+      const ch = !!d.coop !== !!NET.lobCoop; NET.lobSt = clamp(d.st | 0, 0, STADS.length - 1); NET.lobCoop = !!d.coop;
+      if (NET.phase === "lobby" && ch) netLobby(); else { const e = $("on-stad-name"); if (e) e.textContent = STADS[NET.lobSt].name; }
+      return;
+    }
+    if (d.t === "cm") { if (Comm && NET.phase === "match") Comm.show(String(d.x).slice(0, 140), d.pr | 0, (d.pr | 0) >= 2); return; }
     if (!NET.client || NET.phase !== "match") return;
     if (d.t === "s") { if (d.rid !== NET.rid || !Array.isArray(d.P) || d.P.length !== players.length * 6) return; d.at = performance.now(); NET.snaps.push(d); if (NET.snaps.length > 40) NET.snaps.shift(); NET.nSnap = (NET.nSnap || 0) + 1; return; }
     if (d.t === "bn") { const el = $("call-banner"); el.textContent = String(d.x).slice(0, 60); el.classList.add("show"); bannerT = +d.d || 1.2; return; }
@@ -2095,12 +2109,12 @@
     NET.on = true; NET.host = prm.mode === "host"; NET.client = !NET.host; NET.prm = prm; NET.phase = "wait";
     UT = NET.host ? HOME : AWAY;
     document.body.classList.add("online");
-    const room = NET.room = GN.joinFromParams(prm, { max: 2 });
+    const room = NET.room = GN.joinFromParams(prm, { max: 3 });
     netWait("Connecting to room " + prm.code + "…");
     room.on("open", () => { GN.ui.badge(room, { pos: "tl", label: room.code }); if (NET.phase === "wait") netLobby(); });
     room.on("players", () => {
       if (NET.phase === "lobby") { netLobby(); return; }
-      if (NET.host && NET.phase === "match" && room.players().length < 2) partnerLeft();
+      if (NET.host && NET.phase === "match") remoteLeft();
     });
     room.on("message", onNetMsg);
     room.on("error", e => {
@@ -2116,12 +2130,48 @@
     get state() { return state; }, get stats() { return stats; }, get score() { return score.slice(); }, cfg,
     get clock() { return clock; }, get players() { return players; }, get ball() { return ball; },
     get controlledId() { return controlledId; }, get sp() { return sp; }, get half() { return half; },
-    get net() { return { on: NET.on, host: NET.host, client: NET.client, phase: NET.phase, gone: NET.gone, names: NET.names, rid: NET.rid, nSnap: NET.nSnap | 0, ut: UT, ctrl: controlledId, hostCtrl: NET.hostCtrl, remoteCtrl: NET.R ? NET.R.controlledId : -1 }; },
+    get net() { return { on: NET.on, host: NET.host, client: NET.client, phase: NET.phase, gone: NET.gone, names: NET.names, rid: NET.rid, nSnap: NET.nSnap | 0, ut: UT, ctrl: controlledId, hostCtrl: NET.hostCtrl, remoteCtrl: NET.R ? NET.R.controlledId : -1,
+      coop: NET.coop, remotes: remotes.map(q => ({ pid: q.pid, ut: q.UT, ctrl: q.controlledId })), humans: NET.humans }; },
     get room() { return NET.room; },
+    get TD() { return TD; }, get stadium() { return cfg.stadium; }, get mods() { return MOD; }, get comm() { return Comm ? Comm.history.slice() : []; },
+    get view3d() { return has3D ? FC3D.info : null; }, get basis() { return has3D ? FC3D.basis : null; }, get has3D() { return has3D; },
+    get charging() { return charging; }, get passPreview() { return passPreview; },
+    dream: Dream, setCfg(o) { Object.assign(cfg, o || {}); saveCfg(); buildMenus(); initMatch(); },
     // test-only: force a goal / jump the clock on the host
     _goal(team) { if (state === "play" || state === "setpiece") { if (state === "setpiece") endSetpiece(); ball.lastTouch = active(team).find(p => p.role === "FWD") || null; ball.x = teamDir(team) * (HW + 10); goalScored(team); } },
     _clock(c, h) { if (h) half = h; clock = c; },
     setAutoplay(v) { autoplay = !!v; },
+    // test-only: n user shots (fixed power) from the edge of the box vs the keeper, simulated instantly. Returns goals.
+    _shotStats(n, x, power) {
+      const keep = { score: score.slice(), stats, sv: Comm ? Comm.say : null };
+      let goals = 0, onT = 0;
+      for (let i = 0; i < n; i++) {
+        this._place(6, x || 275, -90 + (i * 37) % 180, true, true);
+        const p = controlled(); charging = true; shotCharge = power == null ? 0.55 : power; userShoot(p);
+        const g0 = score[0];
+        for (let k = 0; k < 150 && state === "play"; k++) update(DT);
+        if (score[0] > g0) goals++;
+      }
+      score = keep.score; stats = keep.stats;
+      this._place(6, -100, 0, true, true);
+      return goals;
+    },
+    set timeScale(v) { timeScale = clamp(v | 0, 1, 8); }, set pilot(v) { pilot = !!v; },
+    // test-only: put player `id` at (x, y) in open play, optionally with the ball, and give the user control of him
+    _place(id, x, y, withBall, clear) {
+      const p = players[id]; if (!p) return;
+      if (clear) { // move the other outfield team out of the way (behind the ball if we're attacking, ahead otherwise)
+        const d = teamDir(p.team), back = x * d > 0 ? -1 : 1; let k = 0;
+        for (const q of players) if (q.team !== p.team && q.role !== "GK") { q.x = clamp(x + d * back * 300, -HW + 20, HW - 20); q.y = -150 + (k++) * 60; }
+      }
+      if (state === "setpiece") endSetpiece();
+      state = "play"; advantage = null; pendingSP = null;
+      for (const q of players) { q.tackleT = 0; q.stun = 0; q.vx = q.vy = 0; }
+      p.x = x; p.y = y; p.face = p.team === HOME ? 0 : Math.PI;
+      ball.x = x + 11 * Math.cos(p.face); ball.y = y; ball.z = 0; ball.vx = ball.vy = ball.vz = 0; ball.owner = null; ball.shot = false; ball.passTarget = null;
+      if (withBall) takePossession(p);
+      if (p.team === UT) { controlledId = p.id; autoSwitchT = 0.5; }
+    },
     // Simulate a whole match quickly (no rendering, bot plays the home side aggressively). Returns a summary.
     simulate(opts) {
       Object.assign(cfg, opts || {});
@@ -2140,6 +2190,7 @@
 
   resize();
   setupTouch();
+  resize();
   initMatch();
   showTitle();
   { const prm = GN && GN.params(); if (prm) netBoot(prm); }
