@@ -43,7 +43,7 @@ window.FCDream = (() => {
     // ---- defenders ----
     R("wall", "VIRGIL VAN WALL", "THE WALL", "DEF", 4, 80, 60, 76, 94, 4, "#111", "short", 1.12, "", "Nobody gets past."),
     R("rambos", "SERGIO RAMBOS", "THE BULL", "DEF", 4, 76, 70, 74, 91, 1, "#2a1a10", "long", 1.04, "punch", "Hard but (mostly) fair."),
-    R("capitano", "P. MALDINI-NI", "IL CAPITANO", "DEF", 3, 78, 55, 76, 95, 0, "#2a1a10", "long", 1.06, "", "Clean tackles only."),
+    R("capitano", "P. MALDIVINI", "IL CAPITANO", "DEF", 3, 78, 55, 76, 95, 0, "#2a1a10", "long", 1.06, "", "Clean tackles only."),
     R("tarzan", "C. PUYOLOCK", "TARZAN", "DEF", 5, 74, 50, 66, 92, 1, "#3a2210", "afro", 1.0, "", ""),
     R("missile", "A. HAKIMISSILE", "THE MISSILE", "DEF", 2, 95, 72, 80, 78, 2, "#111", "curly", 0.98, "", "Overlapping full-back."),
     R("roadrun", "A. DAVIESEL", "ROADRUNNER", "DEF", 19, 98, 66, 77, 74, 5, "#111", "buzz", 0.98, "", ""),

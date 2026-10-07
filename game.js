@@ -219,7 +219,7 @@
     return {
       id: team * 7 + slot, team, slot, role: f.r, num: pd.num,
       name: pd.name, cel: pd.cel || "", pid: pd.id || "",
-      shoK: clamp(1 - (pd.sho - base.sho) / 100 * 1.6, 0.55, 1.6), shoPow: (pd.sho - base.sho) * 2.5,
+      shoK: clamp(1 - (pd.sho - base.sho) / 100 * 2.2, 0.5, 1.7), shoPow: (pd.sho - base.sho) * 4,
       pasK: clamp(1 - (pd.pas - base.pas) / 100 * 1.8, 0.5, 1.6), defAdd: (pd.def - base.def) / 100 * 0.6,
       gkK: clamp(1 + (pd.def - base.def) / 100 * 0.8, 0.7, 1.25),
       x: 0, y: 0, vx: 0, vy: 0, face: team === HOME ? 0 : Math.PI,
