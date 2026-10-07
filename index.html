@@ -7,7 +7,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#0a1f14" />
-  <title>GROK FC 3.0</title>
+  <title>GROK FC 3.0.1</title>
   <link rel="stylesheet" href="style.css" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230a1f14'/%3E%3Ccircle cx='32' cy='32' r='18' fill='%23ff6a00'/%3E%3Ccircle cx='32' cy='32' r='10' fill='%2300e8ff'/%3E%3Ccircle cx='32' cy='32' r='4' fill='%23fff'/%3E%3C/svg%3E" />
 </head>
@@ -54,7 +54,7 @@
       <div class="title-row">
         <div>
           <p class="kicker">ARCADE FOOTBALL · 7 v 7 · NOW IN 3D</p>
-          <h1>GROK FC <span class="ver">3.0</span></h1>
+          <h1>GROK FC <span class="ver">3.0.1</span></h1>
           <p class="tag">5 STADIUMS · DREAM TEAM · LIVE COMMENTARY</p>
         </div>
       </div>
@@ -62,7 +62,7 @@
         <div class="set wide"><label>STADIUM</label><div id="pick-stad" class="stads"></div></div>
         <div class="set"><label>YOUR TEAM</label><div id="pick-mode" class="segs"></div><div id="pick-team" class="swatches"></div><div id="dream-sum" class="dream-sum hidden"></div></div>
         <div class="set"><label>OPPONENT</label><div id="pick-opp" class="swatches"></div></div>
-        <div class="set"><label>OPPONENT LEVEL</label><div id="pick-diff" class="segs"></div></div>
+        <div class="set"><label>AI LEVEL</label><div id="pick-diff" class="segs lv5"></div><p id="diff-note" class="note"></p></div>
         <div class="set"><label>REFEREE</label><div id="pick-ref" class="segs"></div><p id="ref-note" class="note"></p></div>
         <div class="set"><label>MATCH LENGTH</label><div id="pick-len" class="segs"></div></div>
       </div>
@@ -150,7 +150,7 @@
   <script src="grok-net.js"></script>
   <script src="dream.js"></script>
   <script src="commentary.js"></script>
-  <script src="fc3d.js"></script>
-  <script src="game.js"></script>
+  <script src="fc3d.js?v=301"></script>
+  <script src="game.js?v=301"></script>
 </body>
 </html>

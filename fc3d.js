@@ -1,4 +1,4 @@
-/* GROK FC 3.0 — three.js presentation: 3D players, ball, 5 stadiums, broadcast camera. Game units: 10 = 1 m. */
+/* GROK FC 3.0.1 — three.js presentation: 3D players, ball, 5 stadiums, broadcast camera. Game units: 10 = 1 m. */
 window.FC3D = (() => {
   "use strict";
   const T = window.THREE;
@@ -28,16 +28,17 @@ window.FC3D = (() => {
 
   function init(canvas) {
     try {
-      renderer = new T.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
+      renderer = new T.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance", precision: "highp" });
     } catch (e) { console.warn("WebGL unavailable", e); return false; }
     scene = new T.Scene();
-    camera = new T.PerspectiveCamera(40, 1, 0.5, 1200);
+    // 3.0.1: tighter near/far (camera is never closer than ~20 m to anything, sky dome r=600) = much better depth precision on phones
+    camera = new T.PerspectiveCamera(40, 1, 1, 800);
     hemi = new T.HemisphereLight(0xffffff, 0x3a5a3a, 0.7); scene.add(hemi);
     sun = new T.DirectionalLight(0xffffff, 0.9); sun.position.set(-30, 60, 40); scene.add(sun);
     geo.box = new T.BoxGeometry(1, 1, 1); geo.sph = new T.SphereGeometry(1, 16, 12); geo.cyl = new T.CylinderGeometry(1, 1, 1, 10);
     geo.blob = new T.CircleGeometry(1, 20); geo.blob.rotateX(-Math.PI / 2);
     mats.shadow = new T.MeshBasicMaterial({ map: cvs(64, 64, (g) => { const r = g.createRadialGradient(32, 32, 2, 32, 32, 31); r.addColorStop(0, "rgba(0,0,0,0.55)"); r.addColorStop(1, "rgba(0,0,0,0)"); g.fillStyle = r; g.fillRect(0, 0, 64, 64); }),
-      transparent: true, depthWrite: false });
+      transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 });
     buildDynamic();
     ok = true;
     return true;
@@ -168,7 +169,8 @@ window.FC3D = (() => {
     scene.fog = new T.Fog(S.fog, 140, 520);
     hemi.intensity = S.hemi; hemi.color.set(S.night ? "#a8b8ff" : "#ffffff"); hemi.groundColor.set(S.night ? "#10201a" : "#3a5a3a");
     sun.intensity = S.sun; sun.color.set(S.sunC);
-    const gnd = add(envG, new T.PlaneGeometry(900, 900), lam(S.roof ? "#3a3f4c" : S.beach ? "#e8d3a0" : S.snow ? "#f2f6fa" : S.night ? "#0e2a18" : "#1f6a34"), 0, -0.05, 0);
+    // 3.0.1: ground sits well below the pitch and is pushed back in the depth buffer so it can never z-fight with it
+    const gnd = add(envG, new T.PlaneGeometry(900, 900), new T.MeshLambertMaterial({ color: S.roof ? "#3a3f4c" : S.beach ? "#e8d3a0" : S.snow ? "#f2f6fa" : S.night ? "#0e2a18" : "#1f6a34", polygonOffset: true, polygonOffsetFactor: 4, polygonOffsetUnits: 8 }), 0, S.roof ? -0.8 : -0.25, 0);
     gnd.rotation.x = -Math.PI / 2;
     const pt = add(envG, new T.PlaneGeometry(PW + 12, PH + 12), new T.MeshLambertMaterial({ map: pitchTexture(S) }), 0, 0, 0);
     pt.rotation.x = -Math.PI / 2;
@@ -186,7 +188,7 @@ window.FC3D = (() => {
     if (S.beach) {
       const sea = add(envG, new T.PlaneGeometry(900, 260), new T.MeshLambertMaterial({ color: 0x1c8fbf }), 0, 0.02, -HH - 150);
       sea.rotation.x = -Math.PI / 2;
-      const foam = add(envG, new T.PlaneGeometry(900, 4), new T.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7 }), 0, 0.04, -HH - 21); foam.rotation.x = -Math.PI / 2; foam.userData.wave = 1;
+      const foam = add(envG, new T.PlaneGeometry(900, 4), new T.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7 }), 0, 0.15, -HH - 21); foam.rotation.x = -Math.PI / 2; foam.userData.wave = 1;
       standBlock(envG, S, tex, 70, 0, HH + 12, 6, false);
       for (let k = -4; k <= 4; k++) { palm(envG, k * 16 + 4, -HH - 12, 9 + (k & 1) * 2); }
       for (const x of [-1, 1]) for (let k = -1; k <= 1; k++) palm(envG, x * (HW + 14), k * 18, 10);
@@ -196,7 +198,7 @@ window.FC3D = (() => {
       // rope "fence"
       for (const z of [-1, 1]) add(envG, geo.box, lam("#d04040"), 0, 0.9, z * (HH + 5.4), PW + 14, 0.08, 0.08);
     } else if (S.roof) {
-      add(envG, geo.box, lam("#2a2f3c"), 0, -1.2, 0, PW + 40, 2.4, PH + 40);
+      add(envG, geo.box, new T.MeshLambertMaterial({ color: "#2a2f3c", polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 4 }), 0, -1.4, 0, PW + 40, 2.4, PH + 40); // 3.0.1: top at y=-0.2, was exactly y=0 = same plane as the pitch
       for (const z of [-1, 1]) for (let k = -10; k <= 10; k++) add(envG, geo.cyl, lam("#c8ccd6"), k * 5.4, 3, z * (HH + 9), 0.08, 6, 0.08);
       for (const x of [-1, 1]) for (let k = -6; k <= 6; k++) add(envG, geo.cyl, lam("#c8ccd6"), x * (HW + 10), 3, k * 5.4, 0.08, 6, 0.08);
       const netM = new T.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.08, side: T.DoubleSide, depthWrite: false });
@@ -338,12 +340,12 @@ window.FC3D = (() => {
     const cone = add(marker, new T.ConeGeometry(0.42, 0.75, 4), new T.MeshBasicMaterial({ color: 0xffe14a }), 0, 0, 0); cone.rotation.x = Math.PI;
     add(marker, new T.ConeGeometry(0.5, 0.85, 4), new T.MeshBasicMaterial({ color: 0x000000, side: T.BackSide }), 0, 0, 0).rotation.x = Math.PI;
     scene.add(marker);
-    ring = new T.Mesh(new T.RingGeometry(0.85, 1.15, 28), new T.MeshBasicMaterial({ color: 0xffe14a, transparent: true, opacity: 0.95, depthWrite: false }));
+    ring = new T.Mesh(new T.RingGeometry(0.85, 1.15, 28), new T.MeshBasicMaterial({ color: 0xffe14a, transparent: true, opacity: 0.95, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 }));
     ring.rotation.x = -Math.PI / 2; scene.add(ring);
-    ring2 = [0, 1].map(() => { const r = new T.Mesh(new T.RingGeometry(0.85, 1.1, 28), new T.MeshBasicMaterial({ color: 0x00e8ff, transparent: true, opacity: 0.9, depthWrite: false }));
+    ring2 = [0, 1].map(() => { const r = new T.Mesh(new T.RingGeometry(0.85, 1.1, 28), new T.MeshBasicMaterial({ color: 0x00e8ff, transparent: true, opacity: 0.9, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 }));
       r.rotation.x = -Math.PI / 2; scene.add(r); return r; });
     passRing = new T.Group();
-    const pm = new T.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95, depthWrite: false });
+    const pm = new T.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 });
     for (let i = 0; i < 8; i++) { const d = new T.Mesh(new T.RingGeometry(0.9, 1.12, 6, 1, i * Math.PI / 4, Math.PI / 6.5), pm); d.rotation.x = -Math.PI / 2; passRing.add(d); }
     scene.add(passRing);
     const cg = new T.BufferGeometry(); cg.setAttribute("position", new T.BufferAttribute(new Float32Array(240 * 3), 3)); cg.setAttribute("color", new T.BufferAttribute(new Float32Array(240 * 3), 3));

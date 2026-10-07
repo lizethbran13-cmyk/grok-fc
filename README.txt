@@ -1,7 +1,7 @@
-GROK FC 3.0
-===========
+GROK FC 3.0.1
+=============
 
-Arcade 7v7 football in 3D (three.js) for phones and desktops. Play the AI (Easy / Normal / Hard),
+Arcade 7v7 football in 3D (three.js) for phones and desktops. Play the AI (Rookie / Easy / Normal / Hard / Pro),
 a friend online 1 v 1, or team up online in CO-OP (2-3 friends on the same team vs the AI).
 
 Run: cd grok-fc && python3 -m http.server 8080   then open http://localhost:8080
@@ -12,6 +12,14 @@ Big buttons on the right:
   defending -> SWITCH · TACKLE · SPRINT (hold with no stick = auto-chase the ball)
 Keyboard: WASD/arrows move, J/Z pass/switch, K/X/Space shoot/tackle (hold to charge),
   L/C/Shift sprint, Q/Tab switch, Esc pause.
+
+What's new in 3.0.1
+- Fixed big black jagged patches on the pitch on iPhone (the Skyline Rooftop deck was drawn in
+  exactly the same plane as the grass; ground layers are now separated and the camera depth range is tighter).
+- No more AI swarming: one presser goes to the ball, one covers (Normal and up), everyone else holds
+  shape and stays out of your space. A defender who misses a tackle backs off for a moment.
+- 5 AI levels that really feel different: ROOKIE (new), EASY, NORMAL, HARD, PRO. Pick on the title
+  screen (saved on the device); in online co-op the host's pick applies.
 
 What's new in 3.0
 - Full 3D: players with kits, numbers and a running animation, ball with shadow and arc,

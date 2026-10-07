@@ -53,12 +53,23 @@
   let MOD = STADS[0].mods;
 
   // Opponent difficulty. Home AI teammates use HOME_AI.
+  // 3.0.1: five levels. press = presser speed, zone = how far up the pitch they press (1 = everywhere), standOff = how close the
+  // presser gets before jockeying, cover = a 2nd defender sits between ball and goal, backoff = seconds a presser retreats after a failed tackle.
   const DIFFS = [
-    { name: "EASY",   spd: 0.90, react: 0.50, tackleRate: 0.70, tackleWin: 0.45, shotErr: 1.45, gk: 0.60, pass: 1.4 },
-    { name: "NORMAL", spd: 0.97, react: 0.32, tackleRate: 1.10, tackleWin: 0.58, shotErr: 1.10, gk: 0.76, pass: 1.1 },
-    { name: "HARD",   spd: 1.03, react: 0.20, tackleRate: 1.60, tackleWin: 0.70, shotErr: 0.85, gk: 0.88, pass: 0.85 },
+    { name: "ROOKIE", note: "Very easy. Barely presses, slow to react, wild shots.", spd: 0.84, react: 0.70, tackleRate: 0.30, tackleWin: 0.30, shotErr: 1.85, gk: 0.50, pass: 1.9,
+      press: 0.80, zone: 0.45, standOff: 40, cover: false, backoff: 2.8 },
+    { name: "EASY",   note: "Gentle. Presses only near their goal and gives you room.", spd: 0.90, react: 0.50, tackleRate: 0.65, tackleWin: 0.45, shotErr: 1.45, gk: 0.60, pass: 1.4,
+      press: 0.92, zone: 0.65, standOff: 26, cover: false, backoff: 2.0 },
+    { name: "NORMAL", note: "Fair. One player presses, one covers.", spd: 0.97, react: 0.32, tackleRate: 1.10, tackleWin: 0.58, shotErr: 1.10, gk: 0.76, pass: 1.1,
+      press: 1.05, zone: 1, standOff: 16, cover: true, backoff: 1.4 },
+    { name: "HARD",   note: "Quick pressing, sharp passing and shooting.", spd: 1.03, react: 0.20, tackleRate: 1.60, tackleWin: 0.70, shotErr: 0.85, gk: 0.88, pass: 0.85,
+      press: 1.15, zone: 1, standOff: 12, cover: true, backoff: 1.0 },
+    { name: "PRO",    note: "Toughest. Fast reactions, strong tackles, deadly finishing.", spd: 1.07, react: 0.12, tackleRate: 2.10, tackleWin: 0.78, shotErr: 0.65, gk: 0.94, pass: 0.65,
+      press: 1.22, zone: 1, standOff: 10, cover: true, backoff: 0.7 },
   ];
-  const HOME_AI = { name: "HOME", spd: 1.0, react: 0.3, tackleRate: 0.9, tackleWin: 0.62, shotErr: 1.0, gk: 0.8, pass: 1.0 };
+  const NORMAL_LV = 2;
+  const HOME_AI = { name: "HOME", spd: 1.0, react: 0.3, tackleRate: 0.9, tackleWin: 0.62, shotErr: 1.0, gk: 0.8, pass: 1.0,
+    press: 1.05, zone: 1, standOff: 16, cover: true, backoff: 1.4 };
   // Referee strictness. S scales foul/card severity; yAdd raises (lenient) or lowers (strict) the yellow bar.
   const REFS = [
     { name: "LENIENT", S: 0.80, yAdd: 0.15, dogso: 0.30 },
@@ -69,8 +80,10 @@
 
   // ---------- settings ----------
   const LS_SET = "grokfc2.settings", LS_HELP = "grokfc2.help", LS_REC = "grokfc2.record";
-  const cfg = { team: 0, opp: 1, diff: 1, ref: 1, len: 1, stadium: 0, mode: 0, coop: false };
-  try { Object.assign(cfg, JSON.parse(localStorage.getItem(LS_SET) || "{}")); } catch (e) { /* ignore */ }
+  const cfg = { team: 0, opp: 1, diff: NORMAL_LV, dv: 2, ref: 1, len: 1, stadium: 0, mode: 0, coop: false };
+  try { const sv = JSON.parse(localStorage.getItem(LS_SET) || "{}") || {}; Object.assign(cfg, sv); if (sv.diff !== undefined && sv.dv !== 2) cfg.diff = (sv.diff | 0) + 1; } catch (e) { /* ignore */ }
+  cfg.dv = 2; // 3.0 saves had 3 levels (EASY/NORMAL/HARD); ROOKIE was added in front
+  cfg.diff = Math.max(0, Math.min(DIFFS.length - 1, cfg.diff | 0));
   function saveCfg() { try { localStorage.setItem(LS_SET, JSON.stringify(cfg)); } catch (e) { /* ignore */ } }
   let record = { w: 0, d: 0, l: 0 };
   try { Object.assign(record, JSON.parse(localStorage.getItem(LS_REC) || "{}")); } catch (e) { /* ignore */ }
@@ -85,7 +98,7 @@
   function angDiff(a, b) { let d = b - a; while (d > Math.PI) d -= TAU; while (d < -Math.PI) d += TAU; return d; }
   const teamDir = t => (t === HOME ? 1 : -1);
   const kitOf = t => TD[t] || TEAMS[t === HOME ? cfg.team : cfg.opp];
-  const diffFor = t => (t === AWAY ? DIFFS[NET.on && !NET.coop ? 1 : cfg.diff] : HOME_AI);
+  const diffFor = t => (t === AWAY ? DIFFS[NET.on && !NET.coop ? NORMAL_LV : cfg.diff] || DIFFS[NORMAL_LV] : HOME_AI);
 
   // ---------- state ----------
   let W = 800, H = 600, dpr = 1, S = 1;
@@ -105,6 +118,7 @@
   let recBuf = [], recAcc = 0;
   let autoSwitchT = 0, shotCharge = 0, charging = false;
   let roles = { chaser: [null, null], presser: [null, null], cover: [null, null], support: [null, null] };
+  const pressGap = [0, 0], lastPresser = [null, null]; // 3.0.1: game-clock time before a new presser may step in (after a failed tackle)
   let passPreview = null;
   let goalFlash = 0;
   // ---------- online (host-authoritative). UT = the team the *current* input context controls ----------
@@ -224,7 +238,7 @@
       gkK: clamp(1 + (pd.def - base.def) / 100 * 0.8, 0.7, 1.25),
       x: 0, y: 0, vx: 0, vy: 0, face: team === HOME ? 0 : Math.PI,
       spd: ROLE_SPEED[f.r] * pacK, stamina: 100, anim: Math.random() * 6,
-      tackleT: 0, tackleCd: 0, tackleDir: 0, tackleKind: "stand", tackleWon: false, tackleHit: null, tackleWin: 0.6,
+      tackleT: 0, tackleCd: 0, backoffT: 0, tackleDir: 0, tackleKind: "stand", tackleWon: false, tackleHit: null, tackleWin: 0.6,
       stun: 0, booked: 0, sentOff: false, fouls: 0,
       runT: 0, runCd: rand(1, 3), runX: 0, runY: 0, decideT: 0, lastKickT: -9, noTouch: 0, holdT: 0,
       diveY: null, diveT: 0, react: 0, diving: 0, headCd: 0, spx: 0, spy: 0, sprinting: false, celebrate: false, receiveT: 0,
@@ -478,10 +492,18 @@
         if (c && hc.some(h => dist(h, ball) < dist(c, ball) + 20)) c = null;
         roles.chaser[t] = c;
       } else if (owner.team !== t) {
-        let pr = pool[0] || null;
-        if (pr && hc.some(h => dist(h, owner) < 140)) { roles.cover[t] = pr; pr = null; }
-        roles.presser[t] = pr;
-        if (!roles.cover[t]) roles.cover[t] = pool[1] || null;
+        // 3.0.1 anti-swarm: exactly one presser (sticky, so it doesn't hand over every frame), one cover only on NORMAL+,
+        // nobody who just missed a tackle, and a short gap before a replacement presser steps in.
+        const D = diffFor(t);
+        const ok = pool.filter(p => !(p.backoffT > 0));
+        const prev = lastPresser[t];
+        let pr = ok[0] || null;
+        if (prev && ok.includes(prev) && pr && dist(prev, owner) < dist(pr, owner) + 50) pr = prev;
+        if (clock < pressGap[t]) pr = null;
+        let cv = D.cover ? ok.find(p => p !== pr) || null : null;
+        if (pr && hc.some(h => dist(h, owner) < 140)) { if (!cv || D.cover) cv = pr; pr = null; }
+        roles.presser[t] = pr; roles.cover[t] = cv;
+        lastPresser[t] = pr || (clock < pressGap[t] ? null : prev);
       } else {
         const mates = out.filter(p => p !== owner && p.runT <= 0);
         mates.sort((a, b) => dist(a, owner) - dist(b, owner));
@@ -615,7 +637,13 @@
         if (Math.hypot(o.x - fx, o.y - fy) < 12 || dist(o, p) < 13) { p.tackleHit = "done"; contact(p, o); break; }
       }
     }
-    if (p.tackleT <= 0) { p.tackleT = 0; if (p.tackleKind === "slide") p.stun = Math.max(p.stun, 0.35); }
+    if (p.tackleT <= 0) {
+      p.tackleT = 0; if (p.tackleKind === "slide") p.stun = Math.max(p.stun, 0.35);
+      if (!p.tackleWon) { // 3.0.1: a missed tackle means this player backs off for a moment instead of sticking to the carrier
+        const D = diffFor(p.team); p.backoffT = D.backoff;
+        if (lastPresser[p.team] === p) { lastPresser[p.team] = null; pressGap[p.team] = clock + D.backoff * 0.5; }
+      }
+    }
   }
 
   // Body contact from a tackle that did not win the ball. Most of these are "play on".
@@ -1124,12 +1152,16 @@
     if (ball.gkHold) { const s = shapeTarget(p); steerTo(p, s.x, s.y, base * 0.8, dt); return; }
     if (roles.presser[p.team] === p) {
       const passive = p.team === HOME;
-      const ax = owner.x + owner.vx * 0.2, ay = owner.y + owner.vy * 0.2;
+      const lead = 0.25 - D.react * 0.5; // slow-reacting levels chase where the carrier *was*
+      const ax = owner.x + owner.vx * lead, ay = owner.y + owner.vy * lead;
       const gsx = ownGX - ax, gsy = -ay, gl = Math.hypot(gsx, gsy) || 1;
       const d = dist(p, owner);
-      steerTo(p, ax + gsx / gl * 16, ay + gsy / gl * 16, base * (d > 50 ? 1.2 : 1.0), dt, 4);
+      // outside their pressing zone, lower levels just jockey from a distance and let you play
+      const inZone = (owner.x - ownGX) * dir <= D.zone * PW;
+      const off = inZone ? D.standOff : Math.max(70, D.standOff);
+      steerTo(p, ax + gsx / gl * off, ay + gsy / gl * off, base * (d > 50 ? 1.2 * D.press : 1.0), dt, 4);
       p.sprinting = d > 50;
-      if (p.tackleCd <= 0) {
+      if (p.tackleCd <= 0 && inZone) {
         const behind = isBehind(p, owner);
         if (d < 28) {
           const rate = D.tackleRate * (behind ? 0.08 : 1) * (passive ? 0.5 : 1);
@@ -1140,7 +1172,10 @@
       }
       return;
     }
-    if (roles.cover[p.team] === p) { steerTo(p, lerp(owner.x, ownGX, 0.3), owner.y * 0.6, base, dt); return; }
+    // keep everyone except the presser out of the carrier's space (anti-swarm)
+    const away = (x, y, r) => { const dx = x - owner.x, dy = y - owner.y, l = Math.hypot(dx, dy); if (l >= r) return [x, y]; if (l < 1) return [owner.x - dir * r, owner.y]; return [owner.x + dx / l * r, owner.y + dy / l * r]; };
+    if (p.backoffT > 0) { const s = shapeTarget(p), q = away(s.x, s.y, 80); steerTo(p, q[0], q[1], base * 0.85, dt); return; }
+    if (roles.cover[p.team] === p) { const q = away(lerp(owner.x, ownGX, 0.3), owner.y * 0.6, 70); steerTo(p, q[0], q[1], base, dt); return; }
     const s = shapeTarget(p);
     let tx = s.x, ty = s.y, mark = null, md = 120;
     for (const o of players) {
@@ -1148,7 +1183,8 @@
       const d = Math.hypot(o.x - s.x, o.y - s.y); if (d < md) { md = d; mark = o; }
     }
     if (mark) { tx = lerp(s.x, mark.x - dir * 20, 0.55); ty = lerp(s.y, mark.y, 0.55); }
-    steerTo(p, tx, ty, base * 0.95, dt);
+    const q = away(tx, ty, 90), close = dist(p, owner) < 90;
+    steerTo(p, q[0], q[1], base * (close ? 1.05 : 0.95), dt);
   }
   function gkUpdate(g, dt) {
     const dir = teamDir(g.team), gx = -dir * HW;
@@ -1353,7 +1389,7 @@
     ref.cardT -= dt; ref.whistleT -= dt; ref.signalT -= dt;
   }
   function timers(p, dt) {
-    p.tackleCd -= dt; p.noTouch -= dt; p.headCd -= dt; if (p.diving > 0) p.diving -= dt;
+    p.tackleCd -= dt; p.noTouch -= dt; p.headCd -= dt; if (p.diving > 0) p.diving -= dt; if (p.backoffT > 0) p.backoffT -= dt;
     if (p.stun > 0) p.stun -= dt;
     if (p.receiveT > 0) p.receiveT -= dt;
   }
@@ -1720,6 +1756,7 @@
       });
     };
     seg("pick-diff", "diff", DIFFS.map(d => d.name));
+    $("diff-note").textContent = (DIFFS[cfg.diff] || DIFFS[NORMAL_LV]).note;
     seg("pick-ref", "ref", REFS.map(r => r.name));
     seg("pick-len", "len", LENGTHS.map(m => m + " MIN"));
     const refNote = ["Lets the game flow. Cards only for nasty fouls.", "Fair: free kicks for fouls, yellows only for reckless tackles.", "By the book: reckless tackles get booked quickly."];
@@ -1906,7 +1943,7 @@
     NET.coop = !!d.coop; NET.names = d.names.map(n => String(n).replace(/[<>&"]/g, "").toUpperCase().slice(0, 26)); NET.colors = d.colors; NET.rid = d.rid; NET.opid = d.opid;
     NET.people = (Array.isArray(d.people) ? d.people : []).slice(0, 3).map(p => ({ pid: String(p.pid), name: GN.cleanName(p.name).toUpperCase(), color: GN.cleanColor(p.color), team: p.team === AWAY ? AWAY : HOME, slot: clamp(p.slot | 0, 1, 6) }));
     if (!NET.people.length) NET.people = [{ pid: "h", name: NET.names[0], color: d.colors[0], team: HOME, slot: 6 }, { pid: d.opid, name: NET.names[1], color: d.colors[1], team: AWAY, slot: 6 }];
-    if (NET.coop) cfg.diff = clamp(d.diff | 0, 0, 2);
+    if (NET.coop) cfg.diff = clamp(d.diff | 0, 0, DIFFS.length - 1);
     const meP = NET.people.find(p => p.pid === NET.room.pid);
     UT = NET.host ? HOME : (meP ? meP.team : AWAY);
     cfg.team = d.team | 0; cfg.opp = d.opp | 0; cfg.len = d.len | 0; cfg.ref = d.ref | 0;
@@ -2155,6 +2192,29 @@
       score = keep.score; stats = keep.stats;
       this._place(6, -100, 0, true, true);
       return goals;
+    },
+    // test-only (3.0.1): a human-like dribbler (zig-zags up-field, never passes) vs AI level `lv` for `secs` of game time, simulated instantly.
+    // Returns how many AI players crowd the carrier: avg/max within 6 m (60 units), % of time with 3+, and possession losses.
+    _swarm(lv, secs) {
+      const keep = { score: score.slice(), stats, diff: cfg.diff, ms: moveSrc, clock, half };
+      cfg.diff = lv; let n = 0, sum = 0, mx = 0, three = 0, losses = 0, t = 0, lost = 0;
+      const start = () => { this._place(6, rand(-200, 0), rand(-120, 120), true, false); };
+      start();
+      for (let k = 0; k < secs * 60; k++) {
+        const p = controlled();
+        t += DT;
+        if (state === "play" && ball.owner === p) {
+          lost = 0;
+          let c = 0; for (const o of players) if (o.team === AWAY && !o.sentOff && o.role !== "GK" && dist(o, p) < 60) c++;
+          n++; sum += c; mx = Math.max(mx, c); if (c >= 3) three++;
+          let yy = Math.sin(t * 1.3) * 0.7; if (Math.abs(p.y) > HH - 60) yy = -Math.sign(p.y) * 0.8;
+          moveSrc = { x: 1, y: yy, m: 1 };
+          if (p.x > HW - 140) start();
+        } else { moveSrc = null; lost += DT; if (lost > 0.8 || state !== "play") { if (state === "play") losses++; start(); lost = 0; } }
+        clock = 20; half = 1; update(DT);
+      }
+      clock = keep.clock; half = keep.half; moveSrc = keep.ms; score = keep.score; stats = keep.stats; cfg.diff = keep.diff;
+      return { lv: DIFFS[lv].name, avgNear: +(sum / Math.max(1, n)).toFixed(2), maxNear: mx, pct3plus: +(100 * three / Math.max(1, n)).toFixed(1), losses, carrySecs: Math.round(n / 60) };
     },
     set timeScale(v) { timeScale = clamp(v | 0, 1, 8); }, set pilot(v) { pilot = !!v; },
     // test-only: put player `id` at (x, y) in open play, optionally with the ball, and give the user control of him
