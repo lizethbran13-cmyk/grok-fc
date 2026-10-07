@@ -1898,7 +1898,7 @@
     NET.rid = (NET.rid || 0) + 1;
     const people = [h, ...os].map((p, i) => ({ pid: p.pid, name: GN.cleanName(p.name).toUpperCase(), color: GN.cleanColor(p.color), team: coop || i === 0 ? HOME : AWAY, slot: coop ? [6, 4, 3][i] : 6 }));
     const short = n => GN.cleanName(n).toUpperCase().slice(0, 8);
-    const names = coop ? [[h, ...os].map(p => short(p.name)).join(" & "), TEAMS[cfg.opp].name + " AI"] : [h.name, o.name];
+    const names = coop ? [[h, ...os].map(p => short(p.name)).join(" + "), TEAMS[cfg.opp].name + " AI"] : [h.name, o.name];
     NET.room.broadcast({ t: "go", rid: NET.rid, names, colors: [GN.cleanColor(h.color), GN.cleanColor(o.color)], opid: o.pid, coop, people, diff: cfg.diff,
       team: cfg.team, opp: cfg.opp, len: cfg.len, ref: cfg.ref, st: cfg.stadium, dts: [myDream(), coop ? null : ((NET.peerDTs || {})[o.pid] || null)] }, { self: true });
   }
